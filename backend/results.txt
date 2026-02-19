@@ -1,0 +1,7 @@
+Token: hf_im...Dzkp
+
+Generating test image in-memory...
+Test image: 693 bytes
+
+
+Model: umm-maybe/AI-image-detector

@@ -13,24 +13,24 @@ __pycache__/
 *.env
 
 # Logs & temp outputs
-result.txt
-results.txt
-test_results.txt
+# result.txt
+# results.txt
+# test_results.txt
 *.log
 logs/
 
-# Test & debug scripts
-test_*.py
-verify_*.py
-debug_*.py
-run_tests.py
+# # Test & debug scripts
+# test_*.py
+# verify_*.py
+# debug_*.py
+# run_tests.py
 
-# ONNX model files (large binary assets)
-models/*.onnx
+# # ONNX model files (large binary assets)
+# models/*.onnx
 
-# Temp images
-test_image.png
-test_image_*.png
+# # Temp images
+# test_image.png
+# test_image_*.png
 
 # IDE
 .vscode/

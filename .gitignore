@@ -32,18 +32,6 @@ backend/**/*.pyo
 backend/**/*.pyd
 backend/.env
 backend/.env.*
-# backend/result.txt
-# backend/results.txt
-# backend/test_results.txt
-# backend/test_image.png
-# backend/test_image_api.py
-# backend/test_cloud.py
-# backend/test_hf.py
-# backend/test_models.py
-# backend/run_tests.py
-# backend/verify_image.py
-# backend/debug_hf_availability.py
-# backend/models/*.onnx
 backend/logs/
 *.log
 
