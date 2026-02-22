@@ -1,0 +1,134 @@
+[
+  {
+    "label": "MelodyMachine/V2 [router]",
+    "model": "MelodyMachine/Deepfake-audio-detection-V2",
+    "base": "router",
+    "mode": "True",
+    "status": 404,
+    "ok": false,
+    "ms": 812,
+    "body": "Not Found"
+  },
+  {
+    "label": "mo-thecreator/detection [router]",
+    "model": "mo-thecreator/Deepfake-audio-detection",
+    "base": "router",
+    "mode": "True",
+    "status": 404,
+    "ok": false,
+    "ms": 491,
+    "body": "Not Found"
+  },
+  {
+    "label": "Hemgg/detection [router]",
+    "model": "Hemgg/Deepfake-audio-detection",
+    "base": "router",
+    "mode": "True",
+    "status": 404,
+    "ok": false,
+    "ms": 625,
+    "body": "Not Found"
+  },
+  {
+    "label": "MelissaWCS/deepfake [router]",
+    "model": "MelissaWCS/wav2vec2-base-finetuned-deepfake-detection",
+    "base": "router",
+    "mode": "True",
+    "status": 404,
+    "ok": false,
+    "ms": 639,
+    "body": "Not Found"
+  },
+  {
+    "label": "bookbot/deepfake [router]",
+    "model": "bookbot-research/wav2vec2-base-deepfake",
+    "base": "router",
+    "mode": "True",
+    "status": 404,
+    "ok": false,
+    "ms": 642,
+    "body": "Not Found"
+  },
+  {
+    "label": "MelodyMachine/V2 [api-inference]",
+    "model": "MelodyMachine/Deepfake-audio-detection-V2",
+    "base": "api-inf",
+    "mode": "True",
+    "status": 410,
+    "ok": false,
+    "ms": 683,
+    "body": "<!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+  },
+  {
+    "label": "mo-thecreator [api-inference]",
+    "model": "mo-thecreator/Deepfake-audio-detection",
+    "base": "api-inf",
+    "mode": "True",
+    "status": 410,
+    "ok": false,
+    "ms": 599,
+    "body": "<!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+  },
+  {
+    "label": "Hemgg/detection [api-inference]",
+    "model": "Hemgg/Deepfake-audio-detection",
+    "base": "api-inf",
+    "mode": "True",
+    "status": 410,
+    "ok": false,
+    "ms": 455,
+    "body": "<!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+  },
+  {
+    "label": "MelissaWCS [api-inference]",
+    "model": "MelissaWCS/wav2vec2-base-finetuned-deepfake-detection",
+    "base": "api-inf",
+    "mode": "True",
+    "status": 410,
+    "ok": false,
+    "ms": 511,
+    "body": "<!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+  },
+  {
+    "label": "bookbot [api-inference]",
+    "model": "bookbot-research/wav2vec2-base-deepfake",
+    "base": "api-inf",
+    "mode": "True",
+    "status": 410,
+    "ok": false,
+    "ms": 478,
+    "body": "<!doctype html>\n<html class=\"\">\n\t<head>\n\t\t<meta charset=\"utf-8\" />\n\n\t\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\" />\n\n\t\t<meta name=\"description\" content=\"We"
+  },
+  {
+    "label": "MelodyMachine/V2 [flac]",
+    "model": "MelodyMachine/Deepfake-audio-detection-V2",
+    "base": "router",
+    "mode": "flac",
+    "status": 404,
+    "ok": false,
+    "ms": 635,
+    "body": "Not Found"
+  },
+  {
+    "label": "MelodyMachine/V2 [octet]",
+    "model": "MelodyMachine/Deepfake-audio-detection-V2",
+    "base": "router",
+    "mode": "octet",
+    "status": 404,
+    "ok": false,
+    "ms": 518,
+    "body": "Not Found"
+  },
+  {
+    "label": "MelodyMachine JSON [api-inference]",
+    "model": "MelodyMachine/Deepfake-audio-detection-V2",
+    "base": "api-inf",
+    "mode": "json",
+    "status": 410,
+    "ok": false,
+    "ms": 705,
+    "body": {
+      "error": "https://api-inference.huggingface.co is no longer supported. Please use https://router.huggingface.co instead."
+    }
+  }
+]

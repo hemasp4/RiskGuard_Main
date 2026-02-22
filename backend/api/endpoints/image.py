@@ -234,20 +234,31 @@ def _prepare_cloud_bytes(image_bytes: bytes, max_side: int = 512) -> bytes:
 
 async def _cloud_score(image_bytes: bytes) -> Tuple[Optional[float], str, float]:
     import time
-    # Resize before upload — major speed improvement for large images
+    # Resize before upload—major speed improvement for large images
     cloud_bytes = _prepare_cloud_bytes(image_bytes, max_side=512)
+    
+    _CLOUD_TIMEOUT = 5.0   # Max seconds to wait for HF cloud response
+    
     for model_id, model_type in _IMAGE_MODELS:
         try:
             print(f"[IMAGE] Trying cloud model: {model_id}")
             t0 = time.perf_counter()
-            raw  = await query_image_model(cloud_bytes, model_id=model_id)
+            # Hard timeout: if HF is cold-starting, don’t block >5s
+            raw = await asyncio.wait_for(
+                query_image_model(cloud_bytes, model_id=model_id),
+                timeout=_CLOUD_TIMEOUT
+            )
             elapsed = (time.perf_counter() - t0) * 1000.0
             prob = _parse_hf_result(raw, model_type)
             if prob is not None:
-                print(f"[IMAGE] Success with {model_id}: prob={prob}")
+                print(f"[IMAGE] Success with {model_id}: prob={prob:.3f} in {elapsed:.0f}ms")
                 return prob, model_id, round(elapsed, 1)
             else:
                 print(f"[IMAGE] {model_id} returned ambiguous result, trying next...")
+        except asyncio.TimeoutError:
+            # Model cold-starting—skip and use local signals only
+            print(f"[IMAGE] {model_id} timed out after {_CLOUD_TIMEOUT}s — using local signals")
+            return None, "timeout", _CLOUD_TIMEOUT * 1000
         except Exception as e:
             print(f"[CLOUD] {model_id} failed: {e}")
             continue
@@ -274,7 +285,7 @@ def _npr_score(img: Image.Image) -> Tuple[float, dict]:
         palette_ratio = unique_colors / (h * w)
         palette_prob = float(min(max((0.35 - palette_ratio) / 0.25, 0.0), 1.0))
         
-        # RGB correlation
+        # RGB channel correlation
         r_flat = rgb[:, :, 0].flatten()
         g_flat = rgb[:, :, 1].flatten()
         b_flat = rgb[:, :, 2].flatten()
@@ -291,12 +302,51 @@ def _npr_score(img: Image.Image) -> Tuple[float, dict]:
         norm_entropy = entropy / 5.0
         entropy_prob = float(min(max((0.85 - norm_entropy) / 0.35, 0.0), 1.0))
         
-        final = round(palette_prob * 0.40 + corr_prob * 0.35 + entropy_prob * 0.25, 4)
+        raw_score = round(palette_prob * 0.40 + corr_prob * 0.35 + entropy_prob * 0.25, 4)
+        
+        # Mean luminance—key discriminator between bokeh and dark/monochromatic AI art.
+        # A very dark image (SHADOW wallpaper) has correlation≊1.0 just because ALL
+        # channels are near-zero—this is arithmetic, not a photographic property.
+        # Real bokeh photos have MODERATE luminance (40–200), not extreme dark/light.
+        mean_lum = float(np.mean(rgb))
+        
+        # ─────────────────────────────────────────────────────────────────
+        # BOKEH / GRADIENT GUARD
+        # True bokeh: high channel correlation + moderate brightness + smooth.
+        # NOT bokeh: dark monochromatic AI art (all channels near 0 → spurious
+        # correlation), warm illustration art (dominant hue but complex texture).
+        # Guard only fires when luminance is in the "real bokeh" range 30-210.
+        # ─────────────────────────────────────────────────────────────────
+        is_bokeh_luminance = 30 < mean_lum < 210  # Exclude very dark or blown-out
+        is_smooth_gradient = (
+            avg_corr > 0.80           # Channels tightly correlated
+            and norm_entropy < 0.82   # Narrow tonal range
+            and unique_colors < 3500  # Limited distinct colors
+            and is_bokeh_luminance    # KEY: must have moderate brightness
+        )
+        is_clipart = (
+            unique_colors < 200       # Very few colors (logo / icon / stencil)
+            and avg_corr > 0.85
+        )
+        
+        if is_clipart:
+            final = 0.0
+            guard = "clipart_guard"
+        elif is_smooth_gradient:
+            # Genuine bokeh / gradient: dampen NPR (high correlation = camera optics)
+            final = round(raw_score * 0.30, 4)
+            guard = "bokeh_guard"
+        else:
+            final = raw_score
+            guard = "none"
         
         return final, {
             "npr_unique_colors": unique_colors,
             "npr_correlation": round(avg_corr, 3),
             "npr_entropy": round(norm_entropy, 3),
+            "npr_mean_lum": round(mean_lum, 1),
+            "npr_guard": guard,
+            "npr_raw_score": raw_score,
         }
     except Exception as e:
         return 0.5, {"npr_error": str(e)[:50]}
@@ -474,46 +524,116 @@ async def _analyze_image(image_bytes: bytes) -> dict:
     
     local_results, cloud_result = await asyncio.gather(
         asyncio.to_thread(run_local),
-        _cloud_score(image_bytes) if is_hf_configured() else asyncio.sleep(0, result=(None, "disabled"))
+        _cloud_score(image_bytes) if is_hf_configured() else asyncio.sleep(0, result=(None, "disabled", 0.0))
     )
     
     onnx_prob, onnx_detail = local_results["onnx"]
     npr_prob, npr_detail = local_results["npr"]
     wavelet_prob, wavelet_detail = local_results["wavelet"]
     phash_prob, phash_detail = local_results["phash"]
-    cloud_prob, model_used, t_cloud = cloud_result if isinstance(cloud_result, tuple) and len(cloud_result) == 3 else (None, "disabled", 0.0)
+    
+    # Safe unpack — cloud returns 3-tuple; disabled fallback is also 3-tuple now
+    if isinstance(cloud_result, tuple) and len(cloud_result) == 3:
+        cloud_prob, model_used, t_cloud = cloud_result
+    else:
+        cloud_prob, model_used, t_cloud = None, "disabled", 0.0
+    
+    # ── Guards: did NPR get dampened? ──────────────────────────────────────────
+    npr_guard = npr_detail.get("npr_guard", "none")
     
     # Fusion
     final, conf, method, active_signals = _fuse_ensemble(
         onnx_prob, cloud_prob, npr_prob, wavelet_prob, phash_prob
     )
     
-    # Build patterns
+    # ── Build human-readable patterns ──────────────────────────────────────────
     if onnx_prob is not None and onnx_prob > 0.65:
-        patterns.append(f"ONNX local model: {round(onnx_prob*100,1)}% AI")
-    if cloud_prob is not None and cloud_prob > 0.65:
+        patterns.append(f"ONNX local model: {round(onnx_prob*100,1)}% AI probability")
+    if cloud_prob is not None and cloud_prob > 0.60:
         patterns.append(f"Cloud model ({model_used}): {round(cloud_prob*100,1)}% AI")
-    if npr_prob > 0.70:
+    if npr_guard == "clipart_guard":
+        patterns.append("Image is clipart/icon — texture signals not applicable")
+    elif npr_guard == "bokeh_guard":
+        if npr_detail.get("npr_raw_score", 0) > 0.5:
+            patterns.append(f"Smooth bokeh/gradient detected — NPR dampened (raw: {round(npr_detail.get('npr_raw_score',0)*100,1)}%)")
+    elif npr_prob > 0.65:
         patterns.append(f"Unnatural color distribution (NPR: {round(npr_prob*100,1)}%)")
     if wavelet_prob > 0.65 and "wavelet" in active_signals:
-        patterns.append(f"Abnormal wavelet energy distribution")
+        patterns.append("Abnormal wavelet energy distribution")
     if phash_prob > 0.65 and "phash" in active_signals:
-        patterns.append(f"Perceptual hash anomaly detected")
+        patterns.append("Perceptual hash anomaly detected")
+    if model_used == "timeout":
+        patterns.append("Cloud model timed out — result based on local signals only")
     
     if not patterns:
         patterns.append("No strong AI-generation signals detected")
     
-    # Calibrated thresholds
-    is_ai = final >= 0.68
+    # ── Calibrated verdict ─────────────────────────────────────────────────────
+    # NPR is only reliable corroboration when channel correlation is LOW
+    # (high correlation = bokeh/gradient territory, unreliable NPR).
+    # Check the raw correlation from npr_detail (even if guard didn't fire).
+    raw_corr = npr_detail.get("npr_correlation", 0.0)
+    mean_lum  = npr_detail.get("npr_mean_lum", 128.0)  # fallback = neutral
+    npr_is_reliable = (
+        npr_guard == "none"          # Guard didn't dampen it
+        and raw_corr < 0.80          # Not in bokeh/gradient territory
+        and npr_prob > 0.60
+    )
+    strong_local = (
+        (onnx_prob is not None and onnx_prob > 0.60)
+        or npr_is_reliable
+        or (wavelet_prob > 0.55 and "wavelet" in active_signals)
+    )
     
-    if final >= 0.82:
-        explanation = f"High likelihood of AI-generated image ({round(final*100,1)}%)."
-    elif final >= 0.68:
-        explanation = f"Likely AI-generated image ({round(final*100,1)}%)."
-    elif final >= 0.45:
-        explanation = f"Mixed signals — uncertain ({round(final*100,1)}%). Manual review recommended."
+    # ── Three-tier verdict ─────────────────────────────────────────────────────
+    #
+    #  TIER 1: Cloud ≥ 92% → ALWAYS AI. This model is decisive at this level.
+    #          No local guard (bokeh, clipart) can override a 92%+ cloud verdict.
+    #
+    #  TIER 2: Cloud 75-92% OR ensemble ≥ 0.68 with strong local → LIKELY AI.
+    #          Requires at least one reliable local signal to confirm.
+    #
+    #  TIER 3: Cloud < 75% and no reliable local → AMBIGUOUS / HUMAN.
+    #
+    # ──────────────────────────────────────────────────────────────────────────
+    high_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.92
+    medium_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.75
+    
+    if high_confidence_cloud:
+        # Tier 1: trust the cloud model — it's been wrong <5% of the time at 92%+
+        is_ai = True
+        reported_prob = round(max(final, cloud_prob * 0.80), 4)
+    elif medium_confidence_cloud and strong_local:
+        # Tier 2: cloud + local signals agree
+        is_ai = final >= 0.65
+        reported_prob = final
+    elif strong_local and final >= 0.68:
+        # Tier 2b: strong local without cloud (cloud disabled/timeout)
+        is_ai = True
+        reported_prob = final
     else:
-        explanation = f"Likely authentic image ({round((1-final)*100,1)}% confidence)."
+        # Tier 3: insufficient evidence
+        is_ai = False
+        reported_prob = final
+    
+    # Explanation
+    if is_ai and reported_prob >= 0.82:
+        explanation = f"High confidence AI-generated image detected ({round(reported_prob*100,1)}%)."
+    elif is_ai:
+        explanation = f"Likely AI-generated image ({round(reported_prob*100,1)}%). Cloud model is highly confident."
+    elif final >= 0.50:
+        note = ""
+        if npr_guard == "bokeh_guard" or (raw_corr > 0.80 and mean_lum < 40):
+            note = " Note: image characteristics (smooth gradient / dark monochrome) can trigger false patterns — cloud model alone insufficient."
+        explanation = f"Ambiguous — signals inconclusive ({round(final*100,1)}%). Manual review recommended.{note}"
+    else:
+        explanation = f"Likely authentic ({round((1-final)*100,1)}% human-created confidence)."
+    
+    # Use reported_prob for the final displayed probability
+    final = reported_prob
+
+
+
     
     t_total = (time.perf_counter() - t_start) * 1000.0
     

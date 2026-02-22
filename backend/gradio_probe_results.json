@@ -1,0 +1,38 @@
+[
+  {
+    "space": "Krish1440/ai-voice-detector-api",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  },
+  {
+    "space": "AK-Gaming-92/voice-detection-api",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  },
+  {
+    "space": "Arastogi603/deepfake-detector-backend",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  },
+  {
+    "space": "GVAmaresh/EchoShield_ML_Huggingface",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  },
+  {
+    "space": "Ashishdubey1974/deepFake_Voice_detection",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  },
+  {
+    "space": "reagvis/audio-detector",
+    "ok": false,
+    "error": "Client.__init__() got an unexpected keyword argument 'hf_token'",
+    "ms": 0
+  }
+]

@@ -1,0 +1,57 @@
+{
+  "upload": {
+    "status": 200,
+    "syntheticProbability": 0.2093,
+    "confidence": 0.8543,
+    "detectedPatterns": [
+      "No strong synthetic voice patterns detected"
+    ],
+    "explanation": "Voice appears genuine (79.1% authentic confidence).",
+    "isLikelyAI": false,
+    "analysisMethod": "lfcc+cqt+modulation+pitch+statistical",
+    "processingTimeMs": 3904.5,
+    "subScores": {
+      "vad_speech_ratio": 1.0,
+      "lfcc_prob": 0.0,
+      "cqt_prob": 0.35,
+      "mod_prob": 0.1685,
+      "pitch_prob": 0.4878,
+      "stat_prob": 0.08,
+      "signal_count": 5,
+      "lfcc_coeff_var": 1.0,
+      "lfcc_delta_var": 1.0,
+      "lfcc_kurtosis": 0.185,
+      "lfcc_var_score": 0.0,
+      "cqt_inter_corr": 0.0022,
+      "cqt_entropy": 0.2852,
+      "cqt_hf_ratio": 0.0009,
+      "mod_peak_freq": 4.03,
+      "mod_flatness": 0.3738,
+      "mod_lh_ratio": 0.9911,
+      "pitch_std_hz": 1.0,
+      "pitch_jitter": 0.0233,
+      "pitch_voiced_r": 0.842,
+      "pitch_range": 1.0,
+      "stat_skewness": 0.0,
+      "stat_kurtosis": 0.0
+    }
+  },
+  "realtime_chunk": {
+    "status": "analyzed",
+    "syntheticProbability": 0.3127,
+    "confidence": 0.85,
+    "isLikelyAI": false,
+    "processingTimeMs": 16.9,
+    "vadSpeechRatio": 1.0,
+    "chunkIndex": 0
+  },
+  "silence_chunk": {
+    "status": "silence",
+    "syntheticProbability": 0.5,
+    "confidence": 0.0,
+    "isLikelyAI": false,
+    "processingTimeMs": 0.1,
+    "vadSpeechRatio": 0.0,
+    "chunkIndex": 1
+  }
+}

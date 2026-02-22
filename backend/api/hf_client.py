@@ -25,14 +25,17 @@ logger = logging.getLogger("riskguard.hf_client")
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-_BASE_URL   = "https://router.huggingface.co/hf-inference/models"  # ✅ CORRECTED (hf-inference, not ht-inference)
+# Image + Audio use the working hf-inference router (api-inference is 410 Gone)
+_BASE_URL      = "https://router.huggingface.co/hf-inference/models"  # Binary (audio/image)
+_TEXT_BASE_URL = "https://api-inference.huggingface.co/models"          # Text JSON requests
 _ENV_KEY    = "HF_TOKEN"
 _TIMEOUT    = 40.0
 _MAX_RETRY  = 2
 _RETRY_WAIT = 12.0
 
-# Custom Colab endpoint (only for desklib text model)
-_COLAB_URL = "https://maricela-unemotional-abjectly.ngrok-free.dev"
+# Custom Colab endpoint — text (desklib) + audio (wav2vec2-asv19 ONNX)
+_COLAB_URL       = "https://maricela-unemotional-abjectly.ngrok-free.dev"
+_AUDIO_COLAB_URL = os.getenv("AUDIO_COLAB_URL", _COLAB_URL).rstrip("/")
 
 # ── Model registry ─────────────────────────────────────────────────────────────
 MODELS = {
@@ -40,11 +43,12 @@ MODELS = {
     "text_primary":   "desklib/ai-text-detector-v1.01",
     "text_secondary": "openai-community/roberta-large-openai-detector",
     "text_fallback":  "Hello-SimpleAI/chatgpt-detector-roberta",
-    # Audio
-    "audio_deepfake": "HyperMoon/wav2vec2-base-finetuned-deepfake",
-    # Image — Nahrawy AIorNot (confirmed working Feb 2025)
+    # Audio — confirmed working on router.huggingface.co/hf-inference
+    "audio_primary":   "MelissaWCS/wav2vec2-base-finetuned-deepfake-detection",
+    "audio_secondary": "bookbot-research/wav2vec2-base-deepfake",
+    "audio_fallback":  "facebook/wav2vec2-base-960h",
+    # Image — confirmed working on router.huggingface.co/hf-inference
     "image_primary":  "Nahrawy/AIorNot",
-    # Image — NSFW detector as fallback (image classification, binary output)
     "image_fallback": "Falconsai/nsfw_image_detection",
 }
 
@@ -67,7 +71,7 @@ def _auth_headers() -> Dict[str, str]:
 def get_model_info() -> Dict[str, Any]:
     return {
         "text_detector":  MODELS["text_primary"],
-        "audio_detector": MODELS["audio_deepfake"],
+        "audio_detector": MODELS["audio_primary"],
         "image_detector": MODELS["image_primary"],
         "configured":     is_hf_configured(),
     }
@@ -88,39 +92,37 @@ _CLIENT = httpx.AsyncClient(
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _post(
-    model_id:    str,
-    payload:     Optional[dict] = None,
-    timeout:     float = _TIMEOUT,
-    binary_body: Optional[bytes] = None,
-    content_type: Optional[str] = None, # Added content_type parameter
+    model_id:     str,
+    payload:      Optional[dict] = None,
+    timeout:      float = _TIMEOUT,
+    binary_body:  Optional[bytes] = None,
+    content_type: Optional[str] = None,
 ) -> Any:
     """
     POST to HuggingFace Inference API.
-    
-    Args:
-        model_id: HF model ID (e.g., "umm-maybe/AI-image-detector")
-        payload: JSON payload (for text models)
-        binary_body: Raw bytes (for image/audio models)
-        timeout: Request timeout in seconds
-        content_type: Optional Content-Type header for binary_body
+    - Binary payloads (audio/image) use _BASE_URL (hf-inference router)
+    - JSON payloads (text)          use _TEXT_BASE_URL (api-inference)
     """
-    url     = f"{_BASE_URL}/{model_id}"
-    headers = _auth_headers()
+    base = _BASE_URL if binary_body is not None else _TEXT_BASE_URL
+    url      = f"{base}/{model_id}"
+    headers  = _auth_headers()
+    
+    # Set Content-Type for binary uploads
     if content_type:
         headers["Content-Type"] = content_type
 
     for attempt in range(_MAX_RETRY + 1):
         try:
             if binary_body is not None:
-                # Binary upload (image/audio)
+                # Binary upload (image/audio) — hf-inference router
                 resp = await _CLIENT.post(
                     url,
                     headers=headers,
-                    content=binary_body,  # Raw bytes in body
+                    content=binary_body,
                     timeout=timeout
                 )
             else:
-                # JSON payload (text models)
+                # JSON payload (text models) — api-inference
                 resp = await _CLIENT.post(
                     url,
                     headers=headers,
@@ -213,6 +215,69 @@ async def _call_colab_desklib(text: str) -> Optional[Any]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# AUDIO COLAB ENDPOINT (wav2vec2-asv19 ONNX, Stage 4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _call_colab_audio(
+    audio_bytes: bytes,
+    realtime: bool = False,
+) -> Optional[dict]:
+    """
+    Send WAV bytes to Colab ONNX audio server.
+    Endpoints:
+      /audio/detect_file     — upload analysis
+      /audio/detect_realtime — realtime chunk analysis
+
+    Returns normalised dict:
+      {
+        "synthetic_prob":  float,   # 0.0-1.0 (higher = more fake)
+        "human_prob":      float,
+        "fake_prob":       float,
+        "stage":           str,
+      }
+    or None if Colab is unreachable.
+    """
+    if not _AUDIO_COLAB_URL:
+        return None
+
+    path = "/audio/detect_realtime" if realtime else "/audio/detect_file"
+    url  = f"{_AUDIO_COLAB_URL}{path}"
+
+    for attempt in range(2):
+        try:
+            # Colab uses FastAPI UploadFile → must send multipart/form-data
+            # with field name "file" (NOT raw binary body)
+            resp = await _CLIENT.post(
+                url,
+                files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+                timeout=20.0,
+            )
+            if resp.status_code == 200:
+                raw          = resp.json()
+                human_prob   = float(raw.get("human_prob", 0.5))
+                fake_prob    = float(raw.get("fake_prob",  0.5))
+                # Normalise so they sum to 1.0 (guards against ONNX softmax drift)
+                total        = human_prob + fake_prob
+                if total > 0:
+                    human_prob /= total
+                    fake_prob  /= total
+                return {
+                    "synthetic_prob": round(fake_prob,  4),
+                    "human_prob":     round(human_prob, 4),
+                    "fake_prob":      round(fake_prob,  4),
+                    "stage":          "onnx_wav2vec2_asv19",
+                }
+            logger.warning(f"[AUDIO_COLAB] {resp.status_code}: {resp.text[:80]}")
+            if resp.status_code < 500:
+                break   # Don't retry 4xx
+        except Exception as e:
+            logger.warning(f"[AUDIO_COLAB] Attempt {attempt+1} failed: {e}")
+        await asyncio.sleep(1.0 * (attempt + 1))
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PUBLIC API
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -262,11 +327,58 @@ async def query_hf_model(model_id: str, inputs: Any) -> Any:
 
 async def query_audio_model(audio_bytes: bytes, model_id: str = None) -> Any:
     """
-    Audio classification — sends raw bytes.
+    Audio classification via hf-inference router.
+    Sends raw WAV bytes with proper Content-Type.
+
+    Model fallback chain:
+    1. MelissaWCS/wav2vec2-base-finetuned-deepfake-detection  (fake/real binary)
+    2. bookbot-research/wav2vec2-base-deepfake                (fake/real binary)
+    3. facebook/wav2vec2-base-960h                             (general ASR fallback)
+
     Returns: [{"label": "fake"/"real", "score": float}]
     """
-    model = model_id or MODELS["audio_deepfake"]
-    return await _post(model, binary_body=audio_bytes, timeout=60.0)
+    # If specific model requested, use it directly
+    if model_id:
+        return await _post(
+            model_id,
+            binary_body=audio_bytes,
+            content_type="audio/wav",
+            timeout=60.0
+        )
+
+    # Fallback chain
+    audio_models = [
+        MODELS["audio_primary"],
+        MODELS["audio_secondary"],
+        MODELS["audio_fallback"],
+    ]
+
+    for model in audio_models:
+        try:
+            logger.info(f"[AUDIO] Trying {model}")
+            result = await _post(
+                model,
+                binary_body=audio_bytes,
+                content_type="audio/wav",
+                timeout=60.0
+            )
+            logger.info(f"[AUDIO] Success with {model}")
+            return result
+        except Exception as e:
+            logger.warning(f"[AUDIO] {model} failed: {e}, trying next...")
+            continue
+
+    logger.error("[AUDIO] All cloud models failed")
+    raise RuntimeError("All audio models unavailable")
+
+
+def _detect_image_ct(image_bytes: bytes) -> str:
+    """Detect MIME type from magic bytes — required by hf-inference router."""
+    if image_bytes[:3] == b"\xff\xd8\xff":          return "image/jpeg"
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":    return "image/png"
+    if b"WEBP" in image_bytes[:12]:                 return "image/webp"
+    if image_bytes[:6] in (b"GIF87a", b"GIF89a"): return "image/gif"
+    return "image/jpeg"  # safe default — accepted by all HF image models
 
 
 async def query_image_model(image_bytes: bytes, model_id: str = None) -> Any:
@@ -278,18 +390,34 @@ async def query_image_model(image_bytes: bytes, model_id: str = None) -> Any:
     - SigLIP zero-shot: {"labels": [...], "scores": [...]}
     """
     model = model_id or MODELS["image_primary"]
-    
-    # All image models on the updated hf-inference router accept binary image bytes
-    # with application/octet-stream content-type header
-    return await _post(
-        model,
-        payload={},
-        timeout=45.0,
-        binary_body=image_bytes,
-        content_type="application/octet-stream"
-    )
+
+    # SigLIP needs special JSON payload with base64 image
+    if "siglip" in model.lower():
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        payload = {
+            "inputs": {"image": b64},
+            "parameters": {"candidate_labels": ["AI generated image", "real photo"]},
+            "options": {"wait_for_model": True},
+        }
+        return await _post(model, payload=payload, timeout=45.0)
+
+    # Standard image classifiers — MUST send Content-Type or router returns 400
+    ct = _detect_image_ct(image_bytes)
+    logger.debug("[IMAGE] Sending %dKB as %s to %s", len(image_bytes) // 1024, ct, model)
+    return await _post(model, binary_body=image_bytes, content_type=ct, timeout=45.0)
 
 
 # Legacy alias
 async def query_text_model(text: str) -> Any:
     return await query_hf_model(MODELS["text_secondary"], text)
+
+
+async def query_colab_audio(
+    audio_bytes: bytes,
+    realtime: bool = False,
+) -> Optional[dict]:
+    """
+    Public API: call Colab ONNX audio server.
+    Returns {synthetic_prob, human_prob, fake_prob, stage} or None.
+    """
+    return await _call_colab_audio(audio_bytes, realtime=realtime)

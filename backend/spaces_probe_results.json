@@ -1,0 +1,203 @@
+[
+  {
+    "space": "Krish1440/ai-voice-detector-api",
+    "fmt": "predict_b64",
+    "url": "https://krish1440-ai-voice-detector-api.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1772,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "Krish1440/ai-voice-detector-api",
+    "fmt": "api_predict",
+    "url": "https://krish1440-ai-voice-detector-api.hf.space/api/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1276,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "Krish1440/ai-voice-detector-api",
+    "fmt": "predict_name",
+    "url": "https://krish1440-ai-voice-detector-api.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1286,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "AK-Gaming-92/voice-detection-api",
+    "fmt": "predict_b64",
+    "url": "https://ak-gaming-92-voice-detection-api.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1396,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "AK-Gaming-92/voice-detection-api",
+    "fmt": "api_predict",
+    "url": "https://ak-gaming-92-voice-detection-api.hf.space/api/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1247,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "AK-Gaming-92/voice-detection-api",
+    "fmt": "predict_name",
+    "url": "https://ak-gaming-92-voice-detection-api.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1336,
+    "body": {
+      "detail": "Not Found"
+    }
+  },
+  {
+    "space": "ROSHANNN123/voicedetectionapi",
+    "fmt": "predict_b64",
+    "url": "https://roshannn123-voicedetectionapi.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 20866,
+    "error": ""
+  },
+  {
+    "space": "ROSHANNN123/voicedetectionapi",
+    "fmt": "api_predict",
+    "url": "https://roshannn123-voicedetectionapi.hf.space/api/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 20970,
+    "error": ""
+  },
+  {
+    "space": "ROSHANNN123/voicedetectionapi",
+    "fmt": "predict_name",
+    "url": "https://roshannn123-voicedetectionapi.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 20924,
+    "error": ""
+  },
+  {
+    "space": "Hariharan00/voice-detection-api",
+    "fmt": "predict_b64",
+    "url": "https://hariharan00-voice-detection-api.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 21224,
+    "error": ""
+  },
+  {
+    "space": "Hariharan00/voice-detection-api",
+    "fmt": "api_predict",
+    "url": "https://hariharan00-voice-detection-api.hf.space/api/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 20962,
+    "error": ""
+  },
+  {
+    "space": "Hariharan00/voice-detection-api",
+    "fmt": "predict_name",
+    "url": "https://hariharan00-voice-detection-api.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 20918,
+    "error": ""
+  },
+  {
+    "space": "Srv99x/voice-detection-ai",
+    "fmt": "predict_b64",
+    "url": "https://srv99x-voice-detection-ai.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1714,
+    "body": "<!DOCTYPE html>\n<html class=\"\">\n<head>\n    <meta charset=\"utf-8\"/>\n    <meta\n            name=\"viewport\"\n            content=\"width=device-width, initial-scale=1.0, user-scalable=no\"\n    />\n    <meta\n            name=\"description\"\n            content=\"We\u2019re on a journey to advance and democratize ar"
+  },
+  {
+    "space": "Srv99x/voice-detection-ai",
+    "fmt": "api_predict",
+    "url": "https://srv99x-voice-detection-ai.hf.space/api/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1285,
+    "body": "<!DOCTYPE html>\n<html class=\"\">\n<head>\n    <meta charset=\"utf-8\"/>\n    <meta\n            name=\"viewport\"\n            content=\"width=device-width, initial-scale=1.0, user-scalable=no\"\n    />\n    <meta\n            name=\"description\"\n            content=\"We\u2019re on a journey to advance and democratize ar"
+  },
+  {
+    "space": "Srv99x/voice-detection-ai",
+    "fmt": "predict_name",
+    "url": "https://srv99x-voice-detection-ai.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1409,
+    "body": "<!DOCTYPE html>\n<html class=\"\">\n<head>\n    <meta charset=\"utf-8\"/>\n    <meta\n            name=\"viewport\"\n            content=\"width=device-width, initial-scale=1.0, user-scalable=no\"\n    />\n    <meta\n            name=\"description\"\n            content=\"We\u2019re on a journey to advance and democratize ar"
+  },
+  {
+    "space": "Arastogi603/deepfake-detector-backend",
+    "fmt": "predict_b64",
+    "url": "https://arastogi603-deepfake-detector-backend.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1626,
+    "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n"
+  },
+  {
+    "space": "Arastogi603/deepfake-detector-backend",
+    "fmt": "api_predict",
+    "url": "https://arastogi603-deepfake-detector-backend.hf.space/api/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1267,
+    "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n"
+  },
+  {
+    "space": "Arastogi603/deepfake-detector-backend",
+    "fmt": "predict_name",
+    "url": "https://arastogi603-deepfake-detector-backend.hf.space/run/predict",
+    "status": 404,
+    "ok": false,
+    "ms": 1586,
+    "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n"
+  },
+  {
+    "space": "testing-ak/voice-detection-v2",
+    "fmt": "predict_b64",
+    "url": "https://testing-ak-voice-detection-v2.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 21023,
+    "error": ""
+  },
+  {
+    "space": "testing-ak/voice-detection-v2",
+    "fmt": "api_predict",
+    "url": "https://testing-ak-voice-detection-v2.hf.space/api/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 21141,
+    "error": ""
+  },
+  {
+    "space": "testing-ak/voice-detection-v2",
+    "fmt": "predict_name",
+    "url": "https://testing-ak-voice-detection-v2.hf.space/run/predict",
+    "status": "exception",
+    "ok": false,
+    "ms": 21251,
+    "error": ""
+  }
+]

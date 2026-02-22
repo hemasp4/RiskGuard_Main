@@ -1,0 +1,29 @@
+{
+  "syntheticProbability": 0.5431,
+  "confidence": 0.7617,
+  "detectedPatterns": [
+    "Low LFCC variance detected (synthetic artifact)"
+  ],
+  "explanation": "Mixed signals \u2014 uncertain (54.3%). Manual review recommended.",
+  "isLikelyAI": false,
+  "analysisMethod": "lfcc+cqt+modulation+statistical",
+  "processingTimeMs": 2322.0,
+  "subScores": {
+    "cloud_prob": null,
+    "lfcc_prob": 0.6206,
+    "cqt_prob": 0.4,
+    "mod_prob": 0.7955,
+    "stat_prob": 0.08,
+    "signal_count": 4,
+    "lfcc_coeff_var": 0.2166,
+    "lfcc_delta_var": 0.4063,
+    "lfcc_kurtosis": -1.542,
+    "lfcc_var_score": 1.0,
+    "cqt_inter_corr": 0.1739,
+    "cqt_entropy": 0.117,
+    "mod_peak_freq": 6.38,
+    "mod_flatness": 0.9869,
+    "stat_skewness": 0.0,
+    "stat_kurtosis": -1.519
+  }
+}

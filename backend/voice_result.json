@@ -1,0 +1,26 @@
+{
+  "syntheticProbability": 0.4785,
+  "confidence": 0.6995,
+  "detectedPatterns": [
+    "No strong synthetic voice patterns detected"
+  ],
+  "explanation": "Mixed signals \u2014 uncertain (47.9%). Manual review recommended.",
+  "isLikelyAI": false,
+  "analysisMethod": "cqt+modulation+statistical",
+  "processingTimeMs": 1756.1,
+  "subScores": {
+    "cloud_prob": null,
+    "lfcc_prob": 0.5,
+    "cqt_prob": 0.4,
+    "mod_prob": 0.7955,
+    "stat_prob": 0.08,
+    "signal_count": 3,
+    "lfcc_error": "module 'numpy.fft' has no attribute 'dct'",
+    "cqt_inter_corr": 0.1732,
+    "cqt_entropy": 0.117,
+    "mod_peak_freq": 6.38,
+    "mod_flatness": 0.9869,
+    "stat_skewness": 0.0,
+    "stat_kurtosis": -1.519
+  }
+}
