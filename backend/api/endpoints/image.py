@@ -24,7 +24,7 @@ Based on: Adobe CAI, Google SynthID research, NIST AI forensics standards
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
-import io, asyncio, time, hashlib
+import io, asyncio, time, hashlib, os
 import numpy as np
 from PIL import Image
 
@@ -33,6 +33,9 @@ from ..hf_client import query_image_model, is_hf_configured
 router = APIRouter()
 
 MAX_BYTES = 15 * 1024 * 1024  # 15 MB max
+
+# ── Colab ONNX API URL (from .env) ───────────────────────────────────────────
+_COLAB_API_URL = os.getenv("COLAB_API_URL", "").strip().rstrip("/")
 
 
 class ImageAnalysisResponse(BaseModel):
@@ -48,105 +51,64 @@ class ImageAnalysisResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIGNAL 1 — ONNX LOCAL MODEL (PRIMARY, FAST, ACCURATE)
+# SIGNAL 1 — COLAB ONNX MODEL (PRIMARY, GPU-ACCELERATED)
 # ══════════════════════════════════════════════════════════════════════════════
+# Replaces local ONNX (no model file on disk).
+# Calls your Colab notebook at POST /image/detect → {"human_prob", "ai_prob"}
 
-_ONNX_MODEL = None  # Lazy-loaded on first use
-_ONNX_SESSION = None
+def is_colab_configured() -> bool:
+    """Check if a Colab ONNX API URL is configured."""
+    return bool(_COLAB_API_URL)
 
 
-def _load_onnx_model():
+async def _colab_onnx_score(image_bytes: bytes) -> Tuple[Optional[float], dict]:
     """
-    Load ONNX-optimized ResNet-50 for AI detection.
-    
-    Free ONNX models for AI image detection:
-    1. resnet50-v1-7.onnx (ImageNet-pretrained, fine-tuned)
-    2. mobilenetv2-7.onnx (lighter, 250MB RAM)
-    3. efficientnet-lite4.onnx (best accuracy/speed trade-off)
-    
-    Download from: https://github.com/onnx/models
-    Or train custom: Use PyTorch → ONNX export on LAION-AI dataset
-    
-    For production: Host model file in /models/ directory
+    Call Colab ONNX API for AI image detection.
+    Resizes image to 512px before upload for speed.
+    Returns (ai_probability, detail_dict) or (None, {}) if unavailable.
     """
-    global _ONNX_MODEL, _ONNX_SESSION
-    
-    if _ONNX_SESSION is not None:
-        return _ONNX_SESSION
-    
-    # Cache a sentinel so we don't retry on every request
-    if _ONNX_MODEL == "unavailable":
-        return None
-    
+    if not _COLAB_API_URL:
+        return None, {"colab_status": "not_configured"}
+
     try:
-        import onnxruntime as ort
-        
-        # Try to load local ONNX model
-        model_path = "/models/ai_image_detector.onnx"
-        
-        try:
-            _ONNX_SESSION = ort.InferenceSession(
-                model_path,
-                providers=['CPUExecutionProvider']  # CPU only for 8GB RAM
+        import httpx
+
+        # Resize to 512px before sending — reduces upload 80%, Colab doesn't need full res
+        upload_bytes = _prepare_cloud_bytes(image_bytes, max_side=512)
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=3.0)) as client:
+            t0 = time.perf_counter()
+            resp = await client.post(
+                f"{_COLAB_API_URL}/image/detect",
+                files={"file": ("image.jpg", upload_bytes, "image/jpeg")},
             )
-            print(f"[ONNX] Loaded local model: {model_path}")
-            return _ONNX_SESSION
-        except Exception:
-            # ONNX raises its own exception types, not FileNotFoundError
-            print(f"[ONNX] Model not found at {model_path} — running without ONNX")
-            _ONNX_MODEL = "unavailable"  # Cache so we don't retry
-            return None
-            
+            elapsed = (time.perf_counter() - t0) * 1000.0
+
+            if resp.status_code != 200:
+                return None, {
+                    "colab_status": f"error_{resp.status_code}",
+                    "colab_body": resp.text[:100],
+                }
+
+            data = resp.json()
+            ai_prob = float(data.get("ai_prob", 0.0))
+            human_prob = float(data.get("human_prob", 1.0))
+
+            print(f"[COLAB] Image ONNX: ai={ai_prob:.3f} human={human_prob:.3f} in {elapsed:.0f}ms")
+
+            return round(ai_prob, 4), {
+                "colab_status": "success",
+                "colab_ai_prob": round(ai_prob, 4),
+                "colab_human_prob": round(human_prob, 4),
+                "colab_time_ms": round(elapsed, 1),
+            }
+
     except ImportError:
-        print("[ONNX] onnxruntime not installed — skipping ONNX")
-        _ONNX_MODEL = "unavailable"
-        return None
-
-
-def _onnx_score(img: Image.Image) -> Tuple[Optional[float], dict]:
-    """
-    Run ONNX inference for AI detection.
-    Returns (prob, detail_dict) or (None, {}) if unavailable.
-    """
-    session = _load_onnx_model()
-    if session is None:
-        return None, {"onnx_status": "unavailable"}
-    
-    try:
-        # Preprocess image for ResNet-50 (224x224, ImageNet normalization)
-        img_resized = img.resize((224, 224))
-        img_array = np.array(img_resized, dtype=np.float32)
-        
-        # ImageNet normalization
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        img_array = (img_array / 255.0 - mean) / std
-        
-        # Transpose to NCHW format (batch, channels, height, width)
-        img_array = np.transpose(img_array, (2, 0, 1))
-        img_array = np.expand_dims(img_array, axis=0)
-        
-        # Run inference
-        input_name = session.get_inputs()[0].name
-        output = session.run(None, {input_name: img_array})
-        
-        # Assuming binary classification: [real_score, ai_score]
-        # Adjust based on your actual model output
-        logits = output[0][0]
-        
-        # Softmax
-        exp_logits = np.exp(logits - np.max(logits))
-        probs = exp_logits / np.sum(exp_logits)
-        
-        ai_prob = float(probs[1]) if len(probs) > 1 else float(probs[0])
-        
-        return round(ai_prob, 4), {
-            "onnx_status": "success",
-            "onnx_confidence": round(float(np.max(probs)), 4)
-        }
-        
+        return None, {"colab_status": "httpx_not_installed"}
     except Exception as e:
-        return None, {"onnx_error": str(e)[:100]}
+        err_msg = repr(e) if not str(e) else str(e)
+        print(f"[COLAB] Image ONNX error: {err_msg}")
+        return None, {"colab_status": "error", "colab_error": err_msg[:150]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -237,13 +199,14 @@ async def _cloud_score(image_bytes: bytes) -> Tuple[Optional[float], str, float]
     # Resize before upload—major speed improvement for large images
     cloud_bytes = _prepare_cloud_bytes(image_bytes, max_side=512)
     
-    _CLOUD_TIMEOUT = 5.0   # Max seconds to wait for HF cloud response
+    # 10s timeout — Nahrawy/AIorNot needs cold-start time on first call.
+    # HF client already has wait_for_model=True internally.
+    _CLOUD_TIMEOUT = 15.0
     
     for model_id, model_type in _IMAGE_MODELS:
         try:
             print(f"[IMAGE] Trying cloud model: {model_id}")
             t0 = time.perf_counter()
-            # Hard timeout: if HF is cold-starting, don’t block >5s
             raw = await asyncio.wait_for(
                 query_image_model(cloud_bytes, model_id=model_id),
                 timeout=_CLOUD_TIMEOUT
@@ -256,8 +219,7 @@ async def _cloud_score(image_bytes: bytes) -> Tuple[Optional[float], str, float]
             else:
                 print(f"[IMAGE] {model_id} returned ambiguous result, trying next...")
         except asyncio.TimeoutError:
-            # Model cold-starting—skip and use local signals only
-            print(f"[IMAGE] {model_id} timed out after {_CLOUD_TIMEOUT}s — using local signals")
+            print(f"[IMAGE] {model_id} timed out after {_CLOUD_TIMEOUT}s")
             return None, "timeout", _CLOUD_TIMEOUT * 1000
         except Exception as e:
             print(f"[CLOUD] {model_id} failed: {e}")
@@ -325,8 +287,8 @@ def _npr_score(img: Image.Image) -> Tuple[float, dict]:
             and is_bokeh_luminance    # KEY: must have moderate brightness
         )
         is_clipart = (
-            unique_colors < 200       # Very few colors (logo / icon / stencil)
-            and avg_corr > 0.85
+            unique_colors < 800       # Digital art / drawings / icons / stencils
+            and avg_corr > 0.80
         )
         
         if is_clipart:
@@ -356,11 +318,13 @@ def _npr_score(img: Image.Image) -> Tuple[float, dict]:
 # SIGNAL 4 — WAVELET TRANSFORM ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _wavelet_score(img: Image.Image) -> Tuple[float, dict]:
+def _wavelet_score(img: Image.Image, npr_unique_colors: int = 9999) -> Tuple[float, dict]:
     """
     Wavelet transform analysis — catches diffusion model artifacts.
-    Enterprises use: Haar/Daubechies wavelets for texture analysis.
     AI images have abnormal high-frequency energy distribution.
+    
+    GUARD: Digital art/drawings have flat colors → very low HF energy → false positive.
+    Uses npr_unique_colors (reliable) instead of gray_unique (unreliable after resize).
     """
     try:
         import pywt
@@ -376,15 +340,30 @@ def _wavelet_score(img: Image.Image) -> Tuple[float, dict]:
         lf_energy = float(np.sum(cA**2))
         energy_ratio = hf_energy / (lf_energy + 1e-9)
         
-        # AI images: ratio 0.05-0.15; natural: 0.2-0.4
-        prob = float(min(max((0.25 - energy_ratio) / 0.20, 0.0), 1.0))
+        # ── DIGITAL ART GUARD (uses NPR color count — reliable) ────────────────
+        # Hand-drawn art, digital drawings, clipart have <1000 unique colors
+        # in NPR's 128x128 analysis window. This is far more reliable than
+        # counting grayscale values after resize (which gave 256 for everything).
+        is_non_photo = npr_unique_colors < 1000
+        
+        if is_non_photo and energy_ratio < 0.08:
+            # Non-photographic image — wavelet is unreliable
+            return 0.0, {
+                "wavelet_energy_ratio": round(energy_ratio, 4),
+                "wavelet_npr_colors": npr_unique_colors,
+                "wavelet_guard": "non_photo",
+            }
+        
+        # AI images: ratio 0.05-0.15; natural photos: 0.2-0.4
+        prob = float(min(max((0.18 - energy_ratio) / 0.15, 0.0), 1.0))
         
         return round(prob, 4), {
-            "wavelet_energy_ratio": round(energy_ratio, 4)
+            "wavelet_energy_ratio": round(energy_ratio, 4),
+            "wavelet_npr_colors": npr_unique_colors,
+            "wavelet_guard": "none",
         }
         
     except ImportError:
-        # PyWavelets not installed — skip
         return 0.5, {"wavelet_status": "unavailable"}
     except Exception as e:
         return 0.5, {"wavelet_error": str(e)[:50]}
@@ -425,8 +404,160 @@ def _phash_score(img: Image.Image) -> Tuple[float, dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ENSEMBLE FUSION
+# IMAGE TYPE CLASSIFIER (Stage 1)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _classify_image_type(img: Image.Image, npr_detail: dict) -> Tuple[str, dict]:
+    """
+    Classify image as: photo | digital_art | screenshot
+    Uses fast structural features (<5ms, no ML model needed).
+    
+    Key insight: ONNX/cloud models were trained on AI photos vs real photos.
+    Digital art (hand-drawn, clipart) is outside their training distribution →
+    they give false positives. We detect this and adjust signal weights.
+    """
+    try:
+        from PIL import ImageFilter
+        
+        # ── Feature 1: Edge density (Sobel) ──────────────────────────────────
+        gray = img.convert("L").resize((128, 128))
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        edge_arr = np.array(edges, dtype=np.float32)
+        edge_density = float(np.mean(edge_arr > 30)) # fraction of edge pixels
+        
+        # ── Feature 2: Color palette size (from NPR) ─────────────────────────
+        unique_colors = npr_detail.get("npr_unique_colors", 5000)
+        
+        # ── Feature 3: Texture variance (local std in 8x8 blocks) ────────────
+        gray_arr = np.array(gray, dtype=np.float32)
+        # Reshape to 16x16 blocks of 8x8
+        blocks = gray_arr.reshape(16, 8, 16, 8).transpose(0, 2, 1, 3).reshape(-1, 8, 8)
+        local_stds = np.std(blocks, axis=(1, 2))
+        avg_texture = float(np.mean(local_stds))
+        
+        # ── Feature 4: Gradient smoothness ────────────────────────────────────
+        dx = np.diff(gray_arr, axis=1)
+        dy = np.diff(gray_arr, axis=0)
+        gradient_energy = float(np.mean(np.abs(dx)) + np.mean(np.abs(dy)))
+        
+        # ── Classification rules ──────────────────────────────────────────────
+        # Photos:       high edge density, high colors, high texture
+        # Digital art:  low edge density, low colors, low texture
+        # Screenshots:  very sharp edges, medium colors, bimodal texture
+        
+        if unique_colors < 1000 and avg_texture < 25:
+            img_type = "digital_art"
+        elif unique_colors < 500:
+            img_type = "digital_art"
+        elif edge_density > 0.35 and gradient_energy > 20:
+            img_type = "screenshot"
+        else:
+            img_type = "photo"
+        
+        detail = {
+            "image_type": img_type,
+            "edge_density": float(round(edge_density, 4)),
+            "unique_colors": int(unique_colors),
+            "avg_texture": float(round(avg_texture, 2)),
+            "gradient_energy": float(round(gradient_energy, 2)),
+        }
+        
+        print(f"[IMAGE_TYPE] {img_type} | edges={edge_density:.3f} colors={unique_colors} texture={avg_texture:.1f}")
+        return img_type, detail
+        
+    except Exception as e:
+        return "photo", {"image_type": "photo", "type_error": str(e)[:50]}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DCT SPECTRAL ANALYSIS (Signal 6 — GAN fingerprint detector)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _dct_spectral_score(img: Image.Image) -> Tuple[float, dict]:
+    """
+    DCT frequency domain analysis for GAN/diffusion fingerprints.
+    
+    AI-generated images have characteristic spectral patterns:
+    - GAN images: periodic peaks in high-frequency DCT coefficients
+    - Diffusion: abnormally smooth high-freq distribution
+    - Natural photos: diverse, noisy high-freq spectrum
+    - Digital art: very few non-zero AC coefficients (flat fills)
+    """
+    try:
+        from scipy.fft import dctn
+        
+        gray = np.array(img.convert("L").resize((128, 128)), dtype=np.float32)
+        
+        # 2D DCT
+        dct_coeffs = dctn(gray, norm='ortho')
+        
+        # Analyze frequency bands
+        h, w = dct_coeffs.shape
+        
+        # Low freq (top-left 16x16), mid freq (16-64), high freq (64+)
+        lf = np.abs(dct_coeffs[:16, :16]).mean()
+        mf = np.abs(dct_coeffs[16:64, 16:64]).mean()
+        hf = np.abs(dct_coeffs[64:, 64:]).mean()
+        
+        # Ratio of high-to-low frequencies
+        hl_ratio = hf / (lf + 1e-9)
+        
+        # Spectral flatness: AI has flatter spectrum than photos
+        log_spectrum = np.log(np.abs(dct_coeffs).flatten() + 1e-9)
+        geo_mean = np.exp(np.mean(log_spectrum))
+        arith_mean = np.mean(np.abs(dct_coeffs).flatten())
+        spectral_flatness = geo_mean / (arith_mean + 1e-9)
+        
+        # Near-zero coefficient ratio (digital art has many zeros)
+        near_zero = float(np.mean(np.abs(dct_coeffs) < 0.5))
+        
+        # AI scoring:
+        # - High spectral flatness (>0.15) = AI-like smooth spectrum
+        # - Very low hl_ratio (<0.01) = AI diffusion smoothing
+        # - Very high near_zero (>0.7) = digital art (NOT AI)
+        
+        if near_zero > 0.70:
+            # Digital art — mostly flat fills, very few AC coefficients
+            prob = 0.05
+            dct_type = "flat_art"
+        elif spectral_flatness > 0.15 and hl_ratio < 0.02:
+            prob = min(0.95, spectral_flatness * 4.0)
+            dct_type = "ai_smooth"
+        elif hl_ratio < 0.005:
+            prob = 0.7
+            dct_type = "diffusion_like"
+        else:
+            # Natural photo-like spectrum
+            prob = max(0.0, min(0.4, spectral_flatness * 2.0))
+            dct_type = "natural"
+        
+        return float(round(prob, 4)), {
+            "dct_hl_ratio": float(round(hl_ratio, 6)),
+            "dct_spectral_flatness": float(round(spectral_flatness, 4)),
+            "dct_near_zero": float(round(near_zero, 4)),
+            "dct_type": dct_type,
+            "dct_lf": float(round(float(lf), 2)),
+            "dct_mf": float(round(float(mf), 2)),
+            "dct_hf": float(round(float(hf), 4)),
+        }
+        
+    except ImportError:
+        return 0.5, {"dct_status": "scipy_not_installed"}
+    except Exception as e:
+        return 0.5, {"dct_error": str(e)[:50]}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENSEMBLE FUSION (Type-Aware Dynamic Weights)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Weight profiles per image type
+_WEIGHT_PROFILES = {
+    #                   ONNX  Cloud  NPR   Wavelet pHash DCT
+    "photo":       {"onnx": 0.35, "cloud": 0.25, "npr": 0.15, "wavelet": 0.10, "phash": 0.05, "dct": 0.10},
+    "digital_art": {"onnx": 0.10, "cloud": 0.10, "npr": 0.05, "wavelet": 0.05, "phash": 0.05, "dct": 0.65},
+    "screenshot":  {"onnx": 0.20, "cloud": 0.15, "npr": 0.15, "wavelet": 0.25, "phash": 0.05, "dct": 0.20},
+}
 
 def _fuse_ensemble(
     onnx_prob:    Optional[float],
@@ -434,47 +565,51 @@ def _fuse_ensemble(
     npr_prob:     float,
     wavelet_prob: float,
     phash_prob:   float,
+    dct_prob:     float = 0.5,
+    image_type:   str = "photo",
 ) -> Tuple[float, float, str, List[str]]:
     """
-    Enterprise-grade weighted ensemble with intelligent fallback.
-    
-    Priority:
-    1. ONNX local (if available) — 40% weight
-    2. Cloud HF — 25% weight
-    3. NPR — 20% weight
-    4. Wavelet — 10% weight
-    5. pHash — 5% weight
+    Type-aware weighted ensemble with dynamic signal weighting.
+    When image_type is 'digital_art', ONNX/cloud weights are heavily reduced
+    because these models were trained on photos, not digital art.
     """
+    profile = _WEIGHT_PROFILES.get(image_type, _WEIGHT_PROFILES["photo"])
     scores, weights, parts = [], [], []
     
-    # ONNX (primary local)
+    # ONNX (Colab)
     if onnx_prob is not None:
         scores.append(onnx_prob)
-        weights.append(0.40)
+        weights.append(profile["onnx"])
         parts.append("onnx")
     
-    # Cloud (secondary, high accuracy)
+    # Cloud HF
     if cloud_prob is not None:
         scores.append(cloud_prob)
-        weights.append(0.25)
+        weights.append(profile["cloud"])
         parts.append("cloud")
     
-    # NPR (always available, good for modern AI)
+    # NPR
     scores.append(npr_prob)
-    weights.append(0.20)
+    weights.append(profile["npr"])
     parts.append("npr")
     
-    # Wavelet (if available)
-    if wavelet_prob != 0.5:  # 0.5 = unavailable signal
+    # Wavelet
+    if wavelet_prob != 0.5:
         scores.append(wavelet_prob)
-        weights.append(0.10)
+        weights.append(profile["wavelet"])
         parts.append("wavelet")
     
-    # pHash (if available)
+    # pHash
     if phash_prob != 0.5:
         scores.append(phash_prob)
-        weights.append(0.05)
+        weights.append(profile["phash"])
         parts.append("phash")
+    
+    # DCT spectral
+    if dct_prob != 0.5:
+        scores.append(dct_prob)
+        weights.append(profile["dct"])
+        parts.append("dct")
     
     # Normalize weights
     total_w = sum(weights)
@@ -489,9 +624,9 @@ def _fuse_ensemble(
     # Confidence based on signal count and agreement
     signal_count = len(scores)
     std_dev = float(np.std(scores)) if len(scores) > 1 else 0.5
-    agreement = 1.0 - min(std_dev / 0.5, 1.0)  # Low std = high agreement
+    agreement = 1.0 - min(std_dev / 0.5, 1.0)
     
-    conf = min(0.95, 0.50 + (signal_count / 5) * 0.25 + agreement * 0.20)
+    conf = min(0.95, 0.50 + (signal_count / 6) * 0.25 + agreement * 0.20)
     
     method = "+".join(parts)
     
@@ -513,127 +648,150 @@ async def _analyze_image(image_bytes: bytes) -> dict:
     w, h = pil_img.size
     patterns: List[str] = []
     
-    # Run all local signals in parallel (threading for CPU-bound)
-    def run_local():
-        return {
-            "onnx": _onnx_score(pil_img),
-            "npr": _npr_score(pil_img),
-            "wavelet": _wavelet_score(pil_img),
-            "phash": _phash_score(pil_img),
-        }
+    # ── Phase 1: NPR (sync) + Colab ONNX + Cloud HF all in parallel ────────
+    # NPR runs in-thread, Colab + Cloud are async HTTP
+    def run_npr():
+        return _npr_score(pil_img)
     
-    local_results, cloud_result = await asyncio.gather(
-        asyncio.to_thread(run_local),
-        _cloud_score(image_bytes) if is_hf_configured() else asyncio.sleep(0, result=(None, "disabled", 0.0))
+    colab_task = _colab_onnx_score(image_bytes) if is_colab_configured() else asyncio.sleep(0, result=(None, {"colab_status": "not_configured"}))
+    cloud_task = _cloud_score(image_bytes) if is_hf_configured() else asyncio.sleep(0, result=(None, "disabled", 0.0))
+    npr_task = asyncio.to_thread(run_npr)
+    
+    colab_result, cloud_result, npr_result = await asyncio.gather(
+        colab_task, cloud_task, npr_task
     )
     
-    onnx_prob, onnx_detail = local_results["onnx"]
-    npr_prob, npr_detail = local_results["npr"]
-    wavelet_prob, wavelet_detail = local_results["wavelet"]
-    phash_prob, phash_detail = local_results["phash"]
+    onnx_prob, onnx_detail = colab_result
+    npr_prob, npr_detail = npr_result
     
-    # Safe unpack — cloud returns 3-tuple; disabled fallback is also 3-tuple now
+    # Safe unpack cloud
     if isinstance(cloud_result, tuple) and len(cloud_result) == 3:
         cloud_prob, model_used, t_cloud = cloud_result
     else:
         cloud_prob, model_used, t_cloud = None, "disabled", 0.0
     
-    # ── Guards: did NPR get dampened? ──────────────────────────────────────────
+    # ── Phase 2: Image type classification (uses NPR data, <5ms) ────────────
+    image_type, type_detail = _classify_image_type(pil_img, npr_detail)
     npr_guard = npr_detail.get("npr_guard", "none")
+    npr_unique_colors = npr_detail.get("npr_unique_colors", 9999)
     
-    # Fusion
+    # ── Phase 3: Wavelet + DCT + pHash (threaded, uses NPR color count) ─────
+    def run_remaining():
+        return {
+            "wavelet": _wavelet_score(pil_img, npr_unique_colors=npr_unique_colors),
+            "phash": _phash_score(pil_img),
+            "dct": _dct_spectral_score(pil_img),
+        }
+    
+    remaining = await asyncio.to_thread(run_remaining)
+    wavelet_prob, wavelet_detail = remaining["wavelet"]
+    phash_prob, phash_detail = remaining["phash"]
+    dct_prob, dct_detail = remaining["dct"]
+    
+    # ── Phase 4: Type-aware ensemble fusion ──────────────────────────────────
     final, conf, method, active_signals = _fuse_ensemble(
-        onnx_prob, cloud_prob, npr_prob, wavelet_prob, phash_prob
+        onnx_prob, cloud_prob, npr_prob, wavelet_prob, phash_prob,
+        dct_prob=dct_prob,
+        image_type=image_type,
     )
     
-    # ── Build human-readable patterns ──────────────────────────────────────────
+    # ── Build human-readable patterns ────────────────────────────────────────
+    # Image type first
+    if image_type == "digital_art":
+        patterns.append(f"Image classified as digital art/drawing — ML model weights reduced")
+    
     if onnx_prob is not None and onnx_prob > 0.65:
-        patterns.append(f"ONNX local model: {round(onnx_prob*100,1)}% AI probability")
+        if image_type == "digital_art":
+            patterns.append(f"Colab ONNX: {round(onnx_prob*100,1)}% AI (weight reduced — model not trained on art)")
+        else:
+            patterns.append(f"Colab ONNX model: {round(onnx_prob*100,1)}% AI probability")
+    elif onnx_prob is not None and onnx_prob < 0.25:
+        patterns.append(f"Colab ONNX model: {round((1 - onnx_prob)*100,1)}% human-created confidence")
+    
     if cloud_prob is not None and cloud_prob > 0.60:
         patterns.append(f"Cloud model ({model_used}): {round(cloud_prob*100,1)}% AI")
+    elif cloud_prob is not None and cloud_prob < 0.30:
+        patterns.append(f"Cloud model ({model_used}): {round((1-cloud_prob)*100,1)}% human confidence")
+    
+    # DCT signal
+    dct_type = dct_detail.get("dct_type", "unknown")
+    if dct_type == "flat_art":
+        patterns.append("DCT spectrum: flat-fill art pattern (not AI)")
+    elif dct_type == "ai_smooth":
+        patterns.append(f"DCT spectrum: AI-like smooth frequency distribution")
+    elif dct_type == "diffusion_like":
+        patterns.append("DCT spectrum: diffusion-model-like frequency pattern")
+    
+    # NPR
     if npr_guard == "clipart_guard":
-        patterns.append("Image is clipart/icon — texture signals not applicable")
+        patterns.append("Digital art/drawing detected — texture signals adjusted")
     elif npr_guard == "bokeh_guard":
         if npr_detail.get("npr_raw_score", 0) > 0.5:
-            patterns.append(f"Smooth bokeh/gradient detected — NPR dampened (raw: {round(npr_detail.get('npr_raw_score',0)*100,1)}%)")
+            patterns.append(f"Smooth bokeh/gradient detected — NPR dampened")
     elif npr_prob > 0.65:
         patterns.append(f"Unnatural color distribution (NPR: {round(npr_prob*100,1)}%)")
-    if wavelet_prob > 0.65 and "wavelet" in active_signals:
+    
+    # Wavelet
+    wavelet_guard = wavelet_detail.get("wavelet_guard", "none")
+    if wavelet_guard == "non_photo":
+        patterns.append("Non-photo image — wavelet signal zeroed")
+    elif wavelet_prob > 0.65 and "wavelet" in active_signals:
         patterns.append("Abnormal wavelet energy distribution")
+    
     if phash_prob > 0.65 and "phash" in active_signals:
         patterns.append("Perceptual hash anomaly detected")
     if model_used == "timeout":
-        patterns.append("Cloud model timed out — result based on local signals only")
+        patterns.append("Cloud model timed out")
     
     if not patterns:
         patterns.append("No strong AI-generation signals detected")
     
-    # ── Calibrated verdict ─────────────────────────────────────────────────────
-    # NPR is only reliable corroboration when channel correlation is LOW
-    # (high correlation = bokeh/gradient territory, unreliable NPR).
-    # Check the raw correlation from npr_detail (even if guard didn't fire).
+    # ── Phase 5: Calibrated verdict (type-aware) ────────────────────────────
     raw_corr = npr_detail.get("npr_correlation", 0.0)
-    mean_lum  = npr_detail.get("npr_mean_lum", 128.0)  # fallback = neutral
-    npr_is_reliable = (
-        npr_guard == "none"          # Guard didn't dampen it
-        and raw_corr < 0.80          # Not in bokeh/gradient territory
-        and npr_prob > 0.60
-    )
-    strong_local = (
-        (onnx_prob is not None and onnx_prob > 0.60)
-        or npr_is_reliable
-        or (wavelet_prob > 0.55 and "wavelet" in active_signals)
-    )
     
-    # ── Three-tier verdict ─────────────────────────────────────────────────────
-    #
-    #  TIER 1: Cloud ≥ 92% → ALWAYS AI. This model is decisive at this level.
-    #          No local guard (bokeh, clipart) can override a 92%+ cloud verdict.
-    #
-    #  TIER 2: Cloud 75-92% OR ensemble ≥ 0.68 with strong local → LIKELY AI.
-    #          Requires at least one reliable local signal to confirm.
-    #
-    #  TIER 3: Cloud < 75% and no reliable local → AMBIGUOUS / HUMAN.
-    #
-    # ──────────────────────────────────────────────────────────────────────────
-    high_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.92
-    medium_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.75
-    
-    if high_confidence_cloud:
-        # Tier 1: trust the cloud model — it's been wrong <5% of the time at 92%+
-        is_ai = True
-        reported_prob = round(max(final, cloud_prob * 0.80), 4)
-    elif medium_confidence_cloud and strong_local:
-        # Tier 2: cloud + local signals agree
-        is_ai = final >= 0.65
-        reported_prob = final
-    elif strong_local and final >= 0.68:
-        # Tier 2b: strong local without cloud (cloud disabled/timeout)
-        is_ai = True
+    # For digital_art, the verdict must be primarily based on DCT + structural
+    # signals, NOT on ONNX/cloud which are unreliable for this image type.
+    if image_type == "digital_art":
+        # Digital art: trust DCT and structural signals over ML models
+        is_ai = final >= 0.55 and dct_prob > 0.5
         reported_prob = final
     else:
-        # Tier 3: insufficient evidence
-        is_ai = False
-        reported_prob = final
+        # Photos: standard multi-tier verdict
+        high_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.92
+        medium_confidence_cloud = cloud_prob is not None and cloud_prob >= 0.75
+        npr_is_reliable = (
+            npr_guard == "none" and raw_corr < 0.80 and npr_prob > 0.60
+        )
+        strong_local = (
+            (onnx_prob is not None and onnx_prob > 0.60)
+            or npr_is_reliable
+            or (wavelet_prob > 0.55 and "wavelet" in active_signals)
+        )
+        
+        if high_confidence_cloud:
+            is_ai = True
+            reported_prob = round(max(final, cloud_prob * 0.80), 4)
+        elif medium_confidence_cloud and strong_local:
+            is_ai = final >= 0.65
+            reported_prob = final
+        elif strong_local and final >= 0.68:
+            is_ai = True
+            reported_prob = final
+        else:
+            is_ai = False
+            reported_prob = final
     
     # Explanation
     if is_ai and reported_prob >= 0.82:
         explanation = f"High confidence AI-generated image detected ({round(reported_prob*100,1)}%)."
     elif is_ai:
-        explanation = f"Likely AI-generated image ({round(reported_prob*100,1)}%). Cloud model is highly confident."
-    elif final >= 0.50:
-        note = ""
-        if npr_guard == "bokeh_guard" or (raw_corr > 0.80 and mean_lum < 40):
-            note = " Note: image characteristics (smooth gradient / dark monochrome) can trigger false patterns — cloud model alone insufficient."
-        explanation = f"Ambiguous — signals inconclusive ({round(final*100,1)}%). Manual review recommended.{note}"
+        explanation = f"Likely AI-generated image ({round(reported_prob*100,1)}%)."
+    elif final >= 0.40:
+        explanation = f"Ambiguous — signals inconclusive ({round(final*100,1)}%). Manual review recommended."
     else:
         explanation = f"Likely authentic ({round((1-final)*100,1)}% human-created confidence)."
     
-    # Use reported_prob for the final displayed probability
     final = reported_prob
-
-
-
     
     t_total = (time.perf_counter() - t_start) * 1000.0
     
@@ -646,12 +804,15 @@ async def _analyze_image(image_bytes: bytes) -> dict:
         "analysisMethod":         method,
         "modelUsed":              model_used if cloud_prob else "local_only",
         "processingTimeMs":       round(t_total, 1),
+        "imageType":              image_type,
         "subScores": {
             "onnx_prob":    onnx_prob,
             "cloud_prob":   cloud_prob,
             "npr_prob":     npr_prob,
             "wavelet_prob": wavelet_prob,
             "phash_prob":   phash_prob,
+            "dct_prob":     dct_prob,
+            "image_type":   image_type,
             "image_size":   f"{w}x{h}",
             "signal_count": len(active_signals),
             "time_cloud_ms": t_cloud,
@@ -660,6 +821,8 @@ async def _analyze_image(image_bytes: bytes) -> dict:
             **npr_detail,
             **wavelet_detail,
             **phash_detail,
+            **dct_detail,
+            **type_detail,
         },
     }
 

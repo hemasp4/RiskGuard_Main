@@ -30,8 +30,8 @@ _BASE_URL      = "https://router.huggingface.co/hf-inference/models"  # Binary (
 _TEXT_BASE_URL = "https://api-inference.huggingface.co/models"          # Text JSON requests
 _ENV_KEY    = "HF_TOKEN"
 _TIMEOUT    = 40.0
-_MAX_RETRY  = 2
-_RETRY_WAIT = 12.0
+_MAX_RETRY  = 1
+_RETRY_WAIT = 3.0
 
 # Custom Colab endpoint — text (desklib) + audio (wav2vec2-asv19 ONNX)
 _COLAB_URL       = "https://maricela-unemotional-abjectly.ngrok-free.dev"
@@ -140,7 +140,7 @@ async def _post(
                     body = resp.json()
                 except Exception:
                     pass
-                wait = min(float(body.get("estimated_time", _RETRY_WAIT)), 20.0)
+                wait = min(float(body.get("estimated_time", _RETRY_WAIT)), 5.0)
                 if attempt < _MAX_RETRY:
                     logger.info(f"[HF] {model_id} loading — retry {attempt+1} in {wait:.0f}s")
                     await asyncio.sleep(wait)
@@ -165,7 +165,7 @@ async def _post(
         except httpx.TimeoutException:
             if attempt < _MAX_RETRY:
                 logger.warning(f"[HF] Timeout on {model_id} — retry {attempt+1}")
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(1.0)
                 continue
             raise RuntimeError(f"HF request timed out ({timeout}s): {model_id}")
         except httpx.RequestError as e:
@@ -404,7 +404,7 @@ async def query_image_model(image_bytes: bytes, model_id: str = None) -> Any:
     # Standard image classifiers — MUST send Content-Type or router returns 400
     ct = _detect_image_ct(image_bytes)
     logger.debug("[IMAGE] Sending %dKB as %s to %s", len(image_bytes) // 1024, ct, model)
-    return await _post(model, binary_body=image_bytes, content_type=ct, timeout=45.0)
+    return await _post(model, binary_body=image_bytes, content_type=ct, timeout=15.0)
 
 
 # Legacy alias

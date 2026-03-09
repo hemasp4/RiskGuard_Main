@@ -24,6 +24,8 @@ Endpoints:
 """
 
 import os
+import io
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -35,15 +37,74 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from PIL import Image as PILImage
 
-from api.endpoints import voice, text, risk, image, video
-from api.hf_client import is_hf_configured, get_model_info
+from api.endpoints import voice, text, risk, image, video, blockchain
+from api.hf_client import is_hf_configured, get_model_info, query_image_model, MODELS
+from api.blockchain.config import is_blockchain_configured, get_blockchain_info
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("riskguard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HF MODEL KEEP-ALIVE (Background Task)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_KEEPALIVE_INTERVAL = 180  # 3 minutes — ensures HF model stays loaded
+
+def _make_tiny_jpeg() -> bytes:
+    """Create a 32x32 random noise JPEG for warm-up pings (~1KB)."""
+    import numpy as np
+    arr = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+    img = PILImage.fromarray(arr)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return buf.getvalue()
+
+_TINY_JPEG = _make_tiny_jpeg()
+
+async def _keepalive_loop():
+    """Ping HF image model every 5 min to keep it loaded."""
+    model_id = MODELS.get("image_primary", "Nahrawy/AIorNot")
+    logger.info(f"[KEEPALIVE] Starting warm-up pinger for {model_id} (every {_KEEPALIVE_INTERVAL}s)")
+    
+    # Initial warm-up
+    try:
+        result = await asyncio.wait_for(
+            query_image_model(_TINY_JPEG, model_id=model_id),
+            timeout=60.0
+        )
+        logger.info(f"[KEEPALIVE] ✅ {model_id} warmed up successfully")
+    except Exception as e:
+        logger.warning(f"[KEEPALIVE] Initial warm-up failed (will retry): {e}")
+    
+    # Periodic keep-alive
+    while True:
+        await asyncio.sleep(_KEEPALIVE_INTERVAL)
+        try:
+            await asyncio.wait_for(
+                query_image_model(_TINY_JPEG, model_id=model_id),
+                timeout=30.0
+            )
+            logger.info(f"[KEEPALIVE] ✅ {model_id} ping OK — model stays loaded")
+        except Exception as e:
+            logger.warning(f"[KEEPALIVE] Ping failed: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: warm up HF models. Shutdown: cancel background tasks."""
+    tasks = []
+    if is_hf_configured():
+        task = asyncio.create_task(_keepalive_loop())
+        tasks.append(task)
+    yield
+    for t in tasks:
+        t.cancel()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -54,6 +115,7 @@ app = FastAPI(
     title="RiskGuard API",
     description="Multi-modal AI & Deepfake Detection — Text · Voice · Image · Video",
     version="3.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -65,11 +127,12 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(text.router,  prefix="/api/v1/analyze", tags=["Text Analysis"])
-app.include_router(voice.router, prefix="/api/v1/analyze", tags=["Voice Analysis"])
-app.include_router(image.router, prefix="/api/v1/analyze", tags=["Image Analysis"])
-app.include_router(video.router, prefix="/api/v1/analyze", tags=["Video Analysis"])
-app.include_router(risk.router,  prefix="/api/v1/score",   tags=["Risk Scoring"])
+app.include_router(text.router,       prefix="/api/v1/analyze",     tags=["Text Analysis"])
+app.include_router(voice.router,      prefix="/api/v1/analyze",     tags=["Voice Analysis"])
+app.include_router(image.router,      prefix="/api/v1/analyze",     tags=["Image Analysis"])
+app.include_router(video.router,      prefix="/api/v1/analyze",     tags=["Video Analysis"])
+app.include_router(risk.router,       prefix="/api/v1/score",       tags=["Risk Scoring"])
+app.include_router(blockchain.router, prefix="/api/v1/blockchain",  tags=["Blockchain Evidence"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -100,7 +163,11 @@ async def root():
 
 @app.get("/health", tags=["System"])
 async def health():
-    return {"status": "healthy", "hf_configured": is_hf_configured()}
+    return {
+        "status": "healthy",
+        "hf_configured": is_hf_configured(),
+        "blockchain_configured": is_blockchain_configured(),
+    }
 
 
 @app.get("/api/v1/status", tags=["System"])
