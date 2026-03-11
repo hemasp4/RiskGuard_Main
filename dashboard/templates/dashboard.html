@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evidence Dashboard — Nimirdhu Nill Ledger</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <!-- Top Nav -->
+    <nav class="topnav">
+        <div class="nav-brand">
+            <span class="nav-icon">🛡️</span>
+            <span class="nav-title">Nimirdhu Nill Evidence Ledger</span>
+            <span class="live-badge"><span class="live-dot"></span> LIVE</span>
+        </div>
+        <div class="nav-right">
+            <span class="nav-user">👤 {{ user }}</span>
+            <a href="/logout" class="btn btn-sm btn-outline">Logout</a>
+        </div>
+    </nav>
+
+    <main class="dashboard-main">
+        <!-- Error Banner -->
+        {% if error %}
+        <div class="alert alert-error">
+            <strong>⚠️ API Connection Error:</strong> {{ error }}
+        </div>
+        {% endif %}
+
+        <!-- Stats Bar -->
+        <section class="stats-bar">
+            <div class="stat-card">
+                <div class="stat-value">{{ counts.total }}</div>
+                <div class="stat-label">Total Evidence</div>
+            </div>
+            <div class="stat-card stat-success">
+                <div class="stat-value">{{ counts.anchored }}</div>
+                <div class="stat-label">Blockchain Verified</div>
+            </div>
+            <div class="stat-card stat-warning">
+                <div class="stat-value">{{ counts.pending }}</div>
+                <div class="stat-label">Pending Anchor</div>
+            </div>
+            <div class="stat-card stat-info">
+                <div class="stat-value">{{ blockchain_status.get('on_chain_batches', 0) }}</div>
+                <div class="stat-label">On-Chain Batches</div>
+            </div>
+        </section>
+
+        <!-- Actions -->
+        <section class="actions-bar">
+            <h2 class="section-title">Evidence Records</h2>
+            <div class="actions-right">
+                {% if counts.pending > 0 %}
+                <button class="btn btn-primary" id="anchorBtn" onclick="anchorEvidence()">
+                    ⛓️ Anchor {{ counts.pending }} Pending to Blockchain
+                </button>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Anchor Result -->
+        <div id="anchorResult" class="alert" style="display:none;"></div>
+
+        <!-- Evidence Table -->
+        <section class="table-container">
+            {% if evidence %}
+            <table class="evidence-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>File</th>
+                        <th>AI Result</th>
+                        <th>Confidence</th>
+                        <th>Threat Type</th>
+                        <th>IPFS</th>
+                        <th>Blockchain</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in evidence %}
+                    <tr>
+                        <td class="mono">#{{ e.id }}</td>
+                        <td class="file-cell" title="{{ e.filename }}">{{ e.filename[:20] }}</td>
+                        <td>
+                            <span class="badge badge-danger">{{ e.ai_result }}</span>
+                        </td>
+                        <td>
+                            <span class="confidence-bar">
+                                <span class="confidence-fill" style="width: {{ (e.confidence * 100)|int }}%"></span>
+                                <span class="confidence-text">{{ (e.confidence * 100)|int }}%</span>
+                            </span>
+                        </td>
+                        <td>{{ e.threat_type }}</td>
+                        <td>
+                            {% if e.ipfs_cid and not e.ipfs_cid.startswith('ipfs_') and not
+                            e.ipfs_cid.startswith('test_') %}
+                            <a href="https://gateway.pinata.cloud/ipfs/{{ e.ipfs_cid }}" target="_blank"
+                                class="link-ipfs" title="{{ e.ipfs_cid }}">
+                                📦 {{ e.ipfs_cid[:8] }}...
+                            </a>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if e.tx_hash %}
+                            <a href="https://amoy.polygonscan.com/tx/{{ e.tx_hash }}" target="_blank" class="link-chain"
+                                title="{{ e.tx_hash }}">
+                                🔗 {{ e.tx_hash[:10] }}...
+                            </a>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if e.anchored %}
+                            <span class="badge badge-verified">✅ Verified</span>
+                            {% else %}
+                            <span class="badge badge-pending">⏳ Pending</span>
+                            {% endif %}
+                        </td>
+                        <td class="actions-cell">
+                            <a href="/evidence/{{ e.id }}" class="btn btn-sm btn-outline">
+                                View
+                            </a>
+                            {% if e.anchored %}
+                            <button class="btn btn-sm btn-verify" onclick="verifyEvidence({{ e.id }}, this)">
+                                Verify
+                            </button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-icon">📭</div>
+                <h3>No Evidence Records</h3>
+                <p>Evidence will appear here when reported from the RiskGuard mobile app.</p>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- Blockchain Info -->
+        {% if blockchain_status %}
+        <section class="info-section">
+            <h3 class="section-title">System Status</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Network</span>
+                    <span class="info-value">{{ blockchain_status.get('network', 'N/A') }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Contract</span>
+                    <span class="info-value mono">{{ blockchain_status.get('contract_address', 'N/A')[:20] }}...</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Blockchain</span>
+                    <span class="info-value">
+                        {% if blockchain_status.get('blockchain_configured') %}
+                        <span class="dot dot-green"></span> Connected
+                        {% else %}
+                        <span class="dot dot-red"></span> Not configured
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">IPFS</span>
+                    <span class="info-value">
+                        {% if blockchain_status.get('ipfs_configured') %}
+                        <span class="dot dot-green"></span> Connected
+                        {% else %}
+                        <span class="dot dot-red"></span> Not configured
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </section>
+        {% endif %}
+    </main>
+
+    <script src="/static/dashboard.js"></script>
+</body>
+
+</html>

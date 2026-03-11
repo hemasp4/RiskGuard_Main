@@ -1,6 +1,6 @@
 {
-    "name": "personal",
-    "short_name": "personal",
+    "name": "risk_guard",
+    "short_name": "risk_guard",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

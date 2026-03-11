@@ -55,3 +55,25 @@ Thumbs.db
 *.key
 google-services.json
 GoogleService-Info.plist
+
+
+
+*_result.json
+*_results.json
+*_result2.json
+*_results.txt
+*.png
+!test_image.png
+out.txt
+debug_out.txt
+audio_results.txt
+pitch_probe.txt
+result.txt
+diff.txt
+
+
+# Dashboard pycache
+dashboard/__pycache__/
+dashboard/**/__pycache__/
+dashboard/**/*.pyc
+dashboard/venv/

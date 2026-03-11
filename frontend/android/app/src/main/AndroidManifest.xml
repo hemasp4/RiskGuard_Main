@@ -1,48 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    
-    
-    <!-- Phone and Call Permissions -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
-    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
-    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS"/>
-    
-    <!-- Overlay Permission for Call Risk Display -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-    
-    <!-- Foreground Service Permission -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
-    
-    <!-- Microphone for Voice Analysis -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    
-    <!-- Notifications -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    
-    <!-- Internet for API calls -->
+    <!-- Permissions for app features -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    
-    <!-- Vibrate for alerts -->
-    <uses-permission android:name="android.permission.VIBRATE"/>
-    
-    <!-- Boot permission for auto-restart -->
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    
-    <!-- Battery Optimization Exemption -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
-    
-    <!-- SMS for auto-response to blocked calls -->
-    <uses-permission android:name="android.permission.SEND_SMS"/>
-    
-    <!-- Answer phone calls for blocking -->
-    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.READ_SMS"/>
+    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" android:minSdkVersion="33"/>
     
     <application
-        android:label="RiskGuard"
+        android:label="risk_guard"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        
-        <!-- Main Activity -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,6 +22,10 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -60,82 +34,18 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            
-            <!-- Receive shared text (SMS, WhatsApp, Email) -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="text/plain"/>
-            </intent-filter>
-            
-            <!-- Receive shared images/videos -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="image/*"/>
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="video/*"/>
-            </intent-filter>
         </activity>
-        
-        
-        <!-- Call State Receiver -->
-        <receiver
-            android:name=".CallStateReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.PHONE_STATE"/>
-                <action android:name="android.intent.action.NEW_OUTGOING_CALL"/>
-            </intent-filter>
-        </receiver>
-        
-        <!-- Boot Receiver for auto-restart after device reboot -->
-        <receiver
-            android:name=".BootReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-            </intent-filter>
-        </receiver>
-        
-        <!-- Notification Action Receiver -->
-        <receiver
-            android:name=".NotificationActionReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.example.personal.ACTION_BLOCK"/>
-                <action android:name="com.example.personal.ACTION_SAVE"/>
-                <action android:name="com.example.personal.ACTION_REPORT"/>
-                <action android:name="com.example.personal.ACTION_VIEW_DETAILS"/>
-                <action android:name="com.example.personal.ACTION_VIEW_REPORT"/>
-            </intent-filter>
-        </receiver>
-        
-        <!-- Call Overlay Foreground Service -->
-        <service
-            android:name=".CallOverlayService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="phoneCall"/>
-        
-        <!-- Flutter Overlay Window Service -->
-        <service
-            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"/>
-        
-        <!-- Flutter Plugin Registration -->
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-    
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>

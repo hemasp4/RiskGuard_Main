@@ -1,385 +1,335 @@
-/// API Service
-///
-/// Handles communication with the RiskGuard backend.
-/// Supports configurable backend URL for Cloudflare tunnel integration.
-library;
+/// Centralized API client for RiskGuard backend communication.
+/// Handles JSON POST, multipart file upload, GET, and error handling.
+/// Privacy-first: no request payload logging.
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:http/http.dart' as http;
+import 'api_config.dart';
+import '../models/analysis_models.dart';
 
-import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+// ══════════════════════════════════════════════════════════════════════════════
+// API RESULT WRAPPER
+// ══════════════════════════════════════════════════════════════════════════════
 
-import 'langchain_router.dart';
+class ApiResult<T> {
+  final T? data;
+  final String? error;
+  final int? statusCode;
 
-/// API Service for backend communication
+  bool get isSuccess => data != null && error == null;
+  bool get isError => error != null;
+
+  ApiResult.success(this.data) : error = null, statusCode = 200;
+  ApiResult.failure(this.error, {this.statusCode}) : data = null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// API SERVICE (SINGLETON)
+// ══════════════════════════════════════════════════════════════════════════════
+
 class ApiService {
-  // Default backend URL (localhost for development)
-  static const String _defaultBaseUrl = 'http://localhost:8000';
-  static const String _baseUrlKey = 'riskguard_backend_url';
-
-  late final Dio _dio;
-  String _baseUrl = _defaultBaseUrl;
-
-  // Singleton
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
+  ApiService._internal();
 
-  ApiService._internal() {
-    _dio = Dio(
-      BaseOptions(
-        connectTimeout: const Duration(seconds: 30),
-        receiveTimeout: const Duration(seconds: 60),
-        sendTimeout: const Duration(seconds: 60),
-      ),
-    );
+  final String _baseUrl = ApiConfig.baseUrl;
 
-    // Add logging interceptor in debug mode
-    if (kDebugMode) {
-      _dio.interceptors.add(
-        LogInterceptor(
-          requestBody: false, // Don't log payload for privacy
-          responseBody: false,
-          logPrint: (o) => debugPrint('[API] $o'),
-        ),
-      );
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  Uri _uri(String path) => Uri.parse('$_baseUrl$path');
+
+  Map<String, String> get _jsonHeaders => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+
+  /// Parse error message from response body
+  String _parseError(http.Response response) {
+    try {
+      final body = jsonDecode(response.body);
+      return body['detail'] ??
+          body['message'] ??
+          'Server error ${response.statusCode}';
+    } catch (_) {
+      return 'Server error ${response.statusCode}';
     }
   }
 
-  /// Initialize service and load saved backend URL
-  Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _baseUrl = prefs.getString(_baseUrlKey) ?? _defaultBaseUrl;
-    _dio.options.baseUrl = _baseUrl;
-    debugPrint('[ApiService] Initialized with URL: $_baseUrl');
-  }
+  // ── Health ─────────────────────────────────────────────────────────────────
 
-  /// Get current backend URL
-  String get baseUrl => _baseUrl;
-
-  /// Set backend URL (for Cloudflare tunnel)
-  Future<void> setBackendUrl(String url) async {
-    _baseUrl = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
-    _dio.options.baseUrl = _baseUrl;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_baseUrlKey, _baseUrl);
-
-    debugPrint('[ApiService] Backend URL set to: $_baseUrl');
-  }
-
-  /// Reset to default URL
-  Future<void> resetToDefault() async {
-    await setBackendUrl(_defaultBaseUrl);
-  }
-
-  /// Check if backend is reachable
+  /// Check if the backend is reachable
   Future<bool> isBackendHealthy() async {
     try {
-      final response = await _dio.get(
-        '/health',
-        options: Options(receiveTimeout: const Duration(seconds: 5)),
-      );
+      final response = await http
+          .get(_uri(ApiConfig.health))
+          .timeout(ApiConfig.healthTimeout);
       return response.statusCode == 200;
-    } catch (e) {
-      debugPrint('[ApiService] Health check failed: $e');
+    } catch (_) {
       return false;
     }
   }
 
-  /// Get API status
-  Future<Map<String, dynamic>?> getApiStatus() async {
+  /// Get backend status info
+  Future<ApiResult<Map<String, dynamic>>> getStatus() async {
     try {
-      final response = await _dio.get('/api/v1/status');
-      return response.data as Map<String, dynamic>;
+      final response = await http
+          .get(_uri(ApiConfig.status))
+          .timeout(ApiConfig.defaultTimeout);
+      if (response.statusCode == 200) {
+        return ApiResult.success(jsonDecode(response.body));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
     } catch (e) {
-      debugPrint('[ApiService] Status check failed: $e');
-      return null;
+      return ApiResult.failure('Connection failed: ${e.toString()}');
     }
   }
 
-  // ==================== Analysis Endpoints ====================
+  // ── Text Analysis ──────────────────────────────────────────────────────────
 
-  /// Analyze text for AI-generated content
-  Future<AnalysisResult> analyzeText(String text) async {
-    try {
-      final response = await _dio.post(
-        '/api/v1/analyze/text',
-        data: {'text': text},
-      );
-
-      return _parseAnalysisResult(response.data, InputType.text);
-    } catch (e) {
-      debugPrint('[ApiService] Text analysis failed: $e');
-      return AnalysisResult.safe(
-        inputType: InputType.text,
-        explanation: 'Cloud analysis unavailable: ${e.toString()}',
-        wasLocal: false,
-      );
-    }
-  }
-
-  /// Analyze voice for deepfake detection
-  Future<AnalysisResult> analyzeVoice(
-    Uint8List audioData, {
-    String? filename,
+  Future<ApiResult<TextAnalysisResult>> analyzeText(
+    String text, {
+    bool useCloudAI = true,
   }) async {
     try {
-      final formData = FormData.fromMap({
-        'audio': MultipartFile.fromBytes(
-          audioData,
-          filename: filename ?? 'audio.wav',
+      final response = await http
+          .post(
+            _uri(ApiConfig.textAnalysis),
+            headers: _jsonHeaders,
+            body: jsonEncode({'text': text, 'useCloudAI': useCloudAI}),
+          )
+          .timeout(ApiConfig.defaultTimeout);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(TextAnalysisResult.fromJson(json));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Text analysis failed: ${e.toString()}');
+    }
+  }
+
+  // ── Voice Analysis ─────────────────────────────────────────────────────────
+
+  /// Upload full audio file for analysis
+  Future<ApiResult<VoiceAnalysisResult>> analyzeVoice(
+    Uint8List audioBytes, {
+    String filename = 'recording.wav',
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.voiceAnalysis),
+      );
+      request.files.add(
+        http.MultipartFile.fromBytes('audio', audioBytes, filename: filename),
+      );
+
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.uploadTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(VoiceAnalysisResult.fromJson(json));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Voice analysis failed: ${e.toString()}');
+    }
+  }
+
+  /// Send real-time audio chunk for quick analysis
+  Future<ApiResult<RealtimeVoiceResult>> analyzeVoiceRealtime(
+    Uint8List chunkBytes, {
+    int chunkIndex = 0,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.voiceRealtime),
+      );
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'audio',
+          chunkBytes,
+          filename: 'chunk_$chunkIndex.wav',
         ),
-      });
+      );
 
-      final response = await _dio.post('/api/v1/analyze/voice', data: formData);
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.defaultTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
 
-      return _parseAnalysisResult(response.data, InputType.audio);
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(RealtimeVoiceResult.fromJson(json));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
     } catch (e) {
-      debugPrint('[ApiService] Voice analysis failed: $e');
-      return AnalysisResult.safe(
-        inputType: InputType.audio,
-        explanation: 'Cloud analysis unavailable: ${e.toString()}',
-        wasLocal: false,
+      return ApiResult.failure(
+        'Realtime voice analysis failed: ${e.toString()}',
       );
     }
   }
 
-  /// Analyze voice in real-time (streaming chunks)
-  Future<AnalysisResult> analyzeVoiceRealtime(Uint8List audioChunk) async {
-    try {
-      final formData = FormData.fromMap({
-        'audio': MultipartFile.fromBytes(audioChunk, filename: 'chunk.wav'),
-      });
+  // ── Image Analysis ─────────────────────────────────────────────────────────
 
-      final response = await _dio.post(
-        '/api/v1/analyze/voice/realtime',
-        data: formData,
-      );
-
-      return _parseAnalysisResult(response.data, InputType.audio);
-    } catch (e) {
-      debugPrint('[ApiService] Realtime voice analysis failed: $e');
-      return AnalysisResult.safe(
-        inputType: InputType.audio,
-        explanation: 'Cloud analysis unavailable',
-        wasLocal: false,
-      );
-    }
-  }
-
-  /// Analyze image for AI-generated content
-  Future<AnalysisResult> analyzeImage(
-    dynamic imageData, {
-    String? filename,
+  Future<ApiResult<ImageAnalysisResult>> analyzeImage(
+    Uint8List imageBytes, {
+    String filename = 'image.png',
   }) async {
     try {
-      FormData formData;
-
-      if (imageData is Uint8List) {
-        formData = FormData.fromMap({
-          'image': MultipartFile.fromBytes(
-            imageData,
-            filename: filename ?? 'image.jpg',
-          ),
-        });
-      } else if (imageData is String) {
-        // File path (mobile only)
-        formData = FormData.fromMap({
-          'image': await MultipartFile.fromFile(imageData),
-        });
-      } else {
-        throw ArgumentError(
-          'Invalid image data type: use Uint8List or String path',
-        );
-      }
-
-      final response = await _dio.post('/api/v1/analyze/image', data: formData);
-
-      return _parseAnalysisResult(response.data, InputType.image);
-    } catch (e) {
-      debugPrint('[ApiService] Image analysis failed: $e');
-      return AnalysisResult.safe(
-        inputType: InputType.image,
-        explanation: 'Cloud analysis unavailable: ${e.toString()}',
-        wasLocal: false,
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.imageAnalysis),
       );
+      request.files.add(
+        http.MultipartFile.fromBytes('image', imageBytes, filename: filename),
+      );
+
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.uploadTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(ImageAnalysisResult.fromJson(json));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Image analysis failed: ${e.toString()}');
     }
   }
 
-  /// Analyze video for deepfakes
-  Future<AnalysisResult> analyzeVideo(
-    dynamic videoData, {
-    String? filename,
+  // ── Video Analysis ─────────────────────────────────────────────────────────
+
+  Future<ApiResult<VideoAnalysisResult>> analyzeVideo(
+    Uint8List videoBytes, {
+    String filename = 'video.mp4',
   }) async {
     try {
-      FormData formData;
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.videoAnalysis),
+      );
+      request.files.add(
+        http.MultipartFile.fromBytes('video', videoBytes, filename: filename),
+      );
 
-      if (videoData is Uint8List) {
-        formData = FormData.fromMap({
-          'video': MultipartFile.fromBytes(
-            videoData,
-            filename: filename ?? 'video.mp4',
-          ),
-        });
-      } else if (videoData is String) {
-        // File path (mobile only)
-        formData = FormData.fromMap({
-          'video': await MultipartFile.fromFile(videoData),
-        });
-      } else {
-        throw ArgumentError(
-          'Invalid video data type: use Uint8List or String path',
-        );
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.uploadTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(VideoAnalysisResult.fromJson(json));
       }
-
-      final response = await _dio.post('/api/v1/analyze/video', data: formData);
-
-      return _parseAnalysisResult(response.data, InputType.video);
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
     } catch (e) {
-      debugPrint('[ApiService] Video analysis failed: $e');
-      return AnalysisResult.safe(
-        inputType: InputType.video,
-        explanation: 'Cloud analysis unavailable: ${e.toString()}',
-        wasLocal: false,
-      );
+      return ApiResult.failure('Video analysis failed: ${e.toString()}');
     }
   }
 
-  // ==================== Helpers ====================
+  // ── Risk Scoring ───────────────────────────────────────────────────────────
 
-  AnalysisResult _parseAnalysisResult(
-    Map<String, dynamic> data,
-    InputType inputType,
-  ) {
-    final confidence = (data['confidence'] as num?)?.toDouble() ?? 0.5;
-    final isAiGenerated = data['is_ai_generated'] as bool? ?? false;
-    final riskScore = (data['risk_score'] as num?)?.toDouble() ?? confidence;
+  Future<ApiResult<RiskScoringResult>> calculateRisk({
+    int? callScore,
+    int? voiceScore,
+    int? contentScore,
+    int? historyScore,
+    List<String>? riskFactors,
+  }) async {
+    try {
+      final body = <String, dynamic>{};
+      if (callScore != null) body['callScore'] = callScore;
+      if (voiceScore != null) body['voiceScore'] = voiceScore;
+      if (contentScore != null) body['contentScore'] = contentScore;
+      if (historyScore != null) body['historyScore'] = historyScore;
+      if (riskFactors != null) body['riskFactors'] = riskFactors;
 
-    // Build explanation from backend response
-    String explanation =
-        data['explanation'] as String? ??
-        data['message'] as String? ??
-        'Analysis complete';
+      final response = await http
+          .post(
+            _uri(ApiConfig.riskCalculate),
+            headers: _jsonHeaders,
+            body: jsonEncode(body),
+          )
+          .timeout(ApiConfig.defaultTimeout);
 
-    // Add details if available
-    final details = data['details'] as Map<String, dynamic>?;
-    if (details != null && details.isNotEmpty) {
-      final detailStrings = details.entries
-          .map((e) => '${e.key}: ${e.value}')
-          .take(3) // Limit to 3 details
-          .join(', ');
-      explanation = '$explanation ($detailStrings)';
-    }
-
-    if (isAiGenerated || riskScore > 0.6) {
-      return AnalysisResult.threat(
-        confidence: riskScore,
-        explanation: explanation,
-        threatType: _getThreatType(inputType, data),
-        inputType: inputType,
-        wasLocal: false,
-      );
-    }
-
-    return AnalysisResult.safe(
-      inputType: inputType,
-      explanation: explanation,
-      wasLocal: false,
-    );
-  }
-
-  String _getThreatType(InputType type, Map<String, dynamic> data) {
-    // Try to get threat type from backend
-    final backendType = data['threat_type'] as String?;
-    if (backendType != null) return backendType;
-
-    // Default threat types based on input type
-    switch (type) {
-      case InputType.text:
-        return 'ai_generated_text';
-      case InputType.audio:
-        return 'synthetic_voice';
-      case InputType.image:
-        return 'ai_generated_image';
-      case InputType.video:
-        return 'deepfake_video';
-      case InputType.url:
-        return 'phishing';
-      case InputType.unknown:
-        return 'unknown';
-    }
-  }
-}
-
-/// Hybrid Analysis Service
-/// Combines local TFLite analysis with cloud fallback
-class HybridAnalysisService {
-  final LangChainRouter _router = LangChainRouter();
-  final ApiService _api = ApiService();
-
-  // Singleton
-  static final HybridAnalysisService _instance =
-      HybridAnalysisService._internal();
-  factory HybridAnalysisService() => _instance;
-  HybridAnalysisService._internal();
-
-  /// Analyze with hybrid approach: local first, cloud if uncertain
-  Future<AnalysisResult> analyze(dynamic input, InputType type) async {
-    debugPrint('[HybridAnalysis] Starting hybrid analysis for ${type.name}');
-
-    // Step 1: Run local analysis
-    final localResult = await _router.analyzeWithType(input, type);
-
-    debugPrint(
-      '[HybridAnalysis] Local result: confidence=${localResult.confidence}, threat=${localResult.isThreat}',
-    );
-
-    // Step 2: Check if we need cloud verification
-    if (localResult.needsCloudVerification) {
-      debugPrint('[HybridAnalysis] Local uncertain, trying cloud...');
-
-      try {
-        final cloudResult = await _runCloudAnalysis(input, type);
-        debugPrint(
-          '[HybridAnalysis] Cloud result: confidence=${cloudResult.confidence}, threat=${cloudResult.isThreat}',
-        );
-        return cloudResult;
-      } catch (e) {
-        debugPrint('[HybridAnalysis] Cloud failed, using local result');
-        return localResult;
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(RiskScoringResult.fromJson(json));
       }
-    }
-
-    return localResult;
-  }
-
-  Future<AnalysisResult> _runCloudAnalysis(
-    dynamic input,
-    InputType type,
-  ) async {
-    switch (type) {
-      case InputType.text:
-        return await _api.analyzeText(input as String);
-      case InputType.audio:
-        return await _api.analyzeVoice(input as Uint8List);
-      case InputType.image:
-        return await _api.analyzeImage(input);
-      case InputType.video:
-        return await _api.analyzeVideo(input);
-      case InputType.url:
-        // URL analysis is done locally
-        return await _router.analyzeWithType(input, type);
-      case InputType.unknown:
-        return AnalysisResult.safe(inputType: type);
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Risk calculation failed: ${e.toString()}');
     }
   }
 
-  /// Quick analysis using local-only (for real-time)
-  Future<AnalysisResult> analyzeLocalOnly(dynamic input, InputType type) async {
-    return await _router.analyzeWithType(input, type);
-  }
+  // ── Blockchain Evidence ───────────────────────────────────────────────────
 
-  /// Full analysis using cloud-only (for manual uploads)
-  Future<AnalysisResult> analyzeCloudOnly(dynamic input, InputType type) async {
-    return await _runCloudAnalysis(input, type);
+  /// File evidence to the blockchain backend (IPFS + SHA256 + SQLite)
+  Future<ApiResult<BlockchainReportResult>> fileBlockchainReport({
+    required Uint8List imageBytes,
+    String filename = 'evidence.png',
+    String profileUrl = '',
+    String threatType = 'Deepfake',
+    String aiResult = 'AI-Generated',
+    double confidence = 0.0,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.blockchainReport),
+      );
+      request.files.add(
+        http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
+      );
+      request.fields['profile_url'] = profileUrl;
+      request.fields['threat_type'] = threatType;
+      request.fields['ai_result'] = aiResult;
+      request.fields['confidence'] = confidence.toString();
+
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.uploadTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return ApiResult.success(BlockchainReportResult.fromJson(json));
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Blockchain report failed: ${e.toString()}');
+    }
   }
 }

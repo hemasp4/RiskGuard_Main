@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evidence #{{ evidence.id }} — Nimirdhu Nill Ledger</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <!-- Top Nav -->
+    <nav class="topnav">
+        <div class="nav-brand">
+            <a href="/dashboard" class="nav-back">← Back</a>
+            <span class="nav-title">Evidence #{{ evidence.id }}</span>
+        </div>
+        <div class="nav-right">
+            <span class="nav-user">👤 {{ user }}</span>
+        </div>
+    </nav>
+
+    <main class="dashboard-main">
+        <div class="detail-grid">
+            <!-- Evidence Info Card -->
+            <div class="detail-card">
+                <h3 class="card-title">📋 Evidence Record</h3>
+                <div class="detail-rows">
+                    <div class="detail-row">
+                        <span class="detail-label">Evidence ID</span>
+                        <span class="detail-value mono">#{{ evidence.id }}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">File</span>
+                        <span class="detail-value">{{ evidence.filename }}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">AI Result</span>
+                        <span class="detail-value">
+                            <span class="badge badge-danger">{{ evidence.ai_result }}</span>
+                        </span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Confidence</span>
+                        <span class="detail-value">{{ (evidence.confidence * 100)|int }}%</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Threat Type</span>
+                        <span class="detail-value">{{ evidence.threat_type }}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Profile URL</span>
+                        <span class="detail-value mono">{{ evidence.profile_url or '—' }}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Timestamp</span>
+                        <span class="detail-value">{{ evidence.timestamp }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Integrity Card -->
+            <div class="detail-card">
+                <h3 class="card-title">🔐 Integrity & Chain of Custody</h3>
+                <div class="detail-rows">
+                    <div class="detail-row">
+                        <span class="detail-label">SHA-256 Hash</span>
+                        <span class="detail-value mono hash-value">{{ evidence.file_hash }}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">IPFS CID</span>
+                        <span class="detail-value">
+                            {% if ipfs_url %}
+                            <a href="{{ ipfs_url }}" target="_blank" class="link-ipfs">
+                                📦 {{ evidence.ipfs_cid }}
+                            </a>
+                            {% else %}
+                            <span class="mono">{{ evidence.ipfs_cid }}</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Blockchain Status</span>
+                        <span class="detail-value">
+                            {% if evidence.anchored %}
+                            <span class="badge badge-verified">✅ Blockchain Verified</span>
+                            {% else %}
+                            <span class="badge badge-pending">⏳ Pending Anchor</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% if evidence.tx_hash %}
+                    <div class="detail-row">
+                        <span class="detail-label">Transaction</span>
+                        <span class="detail-value">
+                            <a href="{{ explorer_url }}" target="_blank" class="link-chain">
+                                🔗 {{ evidence.tx_hash }}
+                            </a>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if evidence.batch_id is not none %}
+                    <div class="detail-row">
+                        <span class="detail-label">Batch ID</span>
+                        <span class="detail-value mono">#{{ evidence.batch_id }}</span>
+                    </div>
+                    {% endif %}
+                    {% if evidence.merkle_root %}
+                    <div class="detail-row">
+                        <span class="detail-label">Merkle Root</span>
+                        <span class="detail-value mono hash-value">{{ evidence.merkle_root }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Merkle Proof -->
+                {% if evidence.merkle_proof %}
+                <div class="merkle-proof-section">
+                    <h4>Merkle Proof Path</h4>
+                    <div class="proof-steps">
+                        {% for step in evidence.merkle_proof %}
+                        <div class="proof-step">
+                            <span class="proof-position">{{ step.position }}</span>
+                            <span class="proof-hash mono">{{ step.hash }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Verify Button -->
+                {% if evidence.anchored %}
+                <div class="verify-section" style="margin-top: 20px;">
+                    <button class="btn btn-primary" id="verifyBtn" onclick="verifyThis()"
+                        style="font-size: 1rem; padding: 12px 28px;">
+                        🔍 Verify Against Blockchain
+                    </button>
+                    <div id="verifyResult" class="verify-result"
+                        style="display:none; margin-top: 16px; padding: 16px; border-radius: 12px;"></div>
+                </div>
+                {% else %}
+                <div class="verify-section"
+                    style="margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(255,193,7,0.06); border: 1px solid rgba(255,193,7,0.2);">
+                    <p style="margin: 0; color: #FFC107;">⏳ Evidence has not been anchored to blockchain yet. Use the
+                        "Anchor to Blockchain" button on the dashboard to anchor pending evidence.</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Evidence Preview -->
+            {% if ipfs_url %}
+            <div class="detail-card full-width">
+                <h3 class="card-title">📎 Evidence File Preview</h3>
+                <div class="preview-container">
+                    <img src="{{ ipfs_url }}" alt="Evidence #{{ evidence.id }}" class="evidence-preview"
+                        onerror="this.style.display='none'">
+                    <a href="{{ ipfs_url }}" target="_blank" class="btn btn-outline btn-sm">
+                        Open in IPFS Gateway →
+                    </a>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </main>
+
+    <script src="/static/dashboard.js"></script>
+    <script>
+        function verifyThis() {
+            verifyEvidence({{ evidence.id }}, document.getElementById('verifyBtn'));
+        }
+    </script>
+</body>
+
+</html>

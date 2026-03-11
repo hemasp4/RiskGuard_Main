@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.personal"
+    namespace = "com.example.risk_guard"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -21,7 +21,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.personal"
+        applicationId = "com.example.risk_guard"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -42,8 +42,3 @@ android {
 flutter {
     source = "../.."
 }
-
-// TODO: Re-enable WorkManager for Daily Digest
-// dependencies {
-//     implementation("androidx.work:work-runtime-ktx:2.8.1")
-// }

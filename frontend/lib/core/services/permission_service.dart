@@ -1,146 +1,99 @@
-import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+/// Service to handle all app permissions
 class PermissionService {
-  /// Check if all required permissions are granted
-  static Future<bool> hasAllPermissions() async {
-    final phoneStatus = await Permission.phone.status;
-    final callLogStatus = await Permission.phone.status;
+  /// Request all necessary permissions at app launch
+  static Future<Map<Permission, PermissionStatus>>
+  requestAllPermissions() async {
+    final Map<Permission, PermissionStatus> statuses = {};
 
-    return phoneStatus.isGranted && callLogStatus.isGranted;
+    // Define all permissions needed by the app
+    final List<Permission> permissions = [
+      Permission.microphone, // For voice scan feature
+      Permission.notification, // For security alerts
+      Permission.sms, // For SMS checking feature
+      Permission.storage, // For image recognition
+      Permission.photos, // For deepfake analysis
+    ];
+
+    // Request all permissions
+    for (final permission in permissions) {
+      final status = await permission.request();
+      statuses[permission] = status;
+    }
+
+    return statuses;
   }
 
-  /// Request phone-related permissions
-  static Future<bool> requestPhonePermissions() async {
-    final statuses = await [Permission.phone].request();
-
-    return statuses[Permission.phone]?.isGranted ?? false;
+  /// Check if a specific permission is granted
+  static Future<bool> isPermissionGranted(Permission permission) async {
+    return await permission.isGranted;
   }
 
-  /// Request call log permission
-  static Future<bool> requestCallLogPermission() async {
-    final status = await Permission.phone.request();
-    return status.isGranted;
+  /// Check if all critical permissions are granted
+  static Future<bool> areAllCriticalPermissionsGranted() async {
+    final microphone = await Permission.microphone.isGranted;
+    final notification = await Permission.notification.isGranted;
+    final sms = await Permission.sms.isGranted;
+
+    return microphone && notification && sms;
   }
 
-  /// Request microphone permission for voice analysis
-  static Future<bool> requestMicrophonePermission() async {
-    final status = await Permission.microphone.request();
-    return status.isGranted;
-  }
-
-  /// Request storage permission for video analysis
-  static Future<bool> requestStoragePermission() async {
-    final status = await Permission.storage.request();
-    return status.isGranted;
-  }
-
-  /// Request notification permission (Android 13+)
-  static Future<bool> requestNotificationPermission() async {
-    final status = await Permission.notification.request();
-    return status.isGranted;
-  }
-
-  /// Check if overlay permission is granted
-  static Future<bool> hasOverlayPermission() async {
-    return await Permission.systemAlertWindow.isGranted;
-  }
-
-  /// Request overlay permission (opens settings)
-  static Future<bool> requestOverlayPermission() async {
-    final status = await Permission.systemAlertWindow.request();
-    return status.isGranted;
-  }
-
-  /// Open app settings for manual permission granting
-  static Future<bool> openSettings() async {
+  /// Open app settings if permission is permanently denied
+  static Future<bool> openAppSettings() async {
     return await openAppSettings();
   }
 
-  /// Get list of all required permissions with their status
-  static Future<Map<Permission, PermissionStatus>>
-  getAllPermissionStatuses() async {
-    return {
-      Permission.phone: await Permission.phone.status,
-      Permission.microphone: await Permission.microphone.status,
-      Permission.notification: await Permission.notification.status,
-      Permission.systemAlertWindow: await Permission.systemAlertWindow.status,
-    };
-  }
+  /// Request individual permission with explanation
+  static Future<PermissionStatus> requestPermission(
+    Permission permission,
+  ) async {
+    final status = await permission.status;
 
-  /// Request all required permissions
-  static Future<Map<Permission, PermissionStatus>>
-  requestAllPermissions() async {
-    return await [
-      Permission.phone,
-      Permission.microphone,
-      Permission.notification,
-    ].request();
-  }
-
-  /// Show permission rationale dialog
-  static Future<bool> showPermissionRationale(
-    BuildContext context, {
-    required String title,
-    required String message,
-    required VoidCallback onAccept,
-  }) async {
-    return await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: Text(title),
-            content: Text(message),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Not Now'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context, true);
-                  onAccept();
-                },
-                child: const Text('Allow'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-  }
-}
-
-/// Permission descriptions for UI - using String keys to avoid const map issues
-class PermissionDescriptions {
-  static String getTitle(Permission permission) {
-    if (permission == Permission.phone) return 'Phone Access';
-    if (permission == Permission.microphone) return 'Microphone Access';
-    if (permission == Permission.notification) return 'Notifications';
-    if (permission == Permission.systemAlertWindow) return 'Display Over Apps';
-    return 'Permission';
-  }
-
-  static String getDescription(Permission permission) {
-    if (permission == Permission.phone) {
-      return 'Required to detect incoming calls and show risk alerts';
+    if (status.isDenied) {
+      return await permission.request();
     }
+
+    return status;
+  }
+
+  /// Get user-friendly permission name
+  static String getPermissionName(Permission permission) {
+    if (permission == Permission.microphone) return 'Microphone';
+    if (permission == Permission.notification) return 'Notifications';
+    if (permission == Permission.sms) return 'SMS';
+    if (permission == Permission.storage) return 'Storage';
+    if (permission == Permission.photos) return 'Photos';
+    return 'Unknown';
+  }
+
+  /// Get permission description
+  static String getPermissionDescription(Permission permission) {
     if (permission == Permission.microphone) {
-      return 'Required for voice analysis to detect AI-generated voices';
+      return 'Required for voice scan and scam detection';
     }
     if (permission == Permission.notification) {
-      return 'Required to show protection status notifications';
+      return 'Get alerts about security threats';
     }
-    if (permission == Permission.systemAlertWindow) {
-      return 'Required to display risk alerts during calls';
+    if (permission == Permission.sms) {
+      return 'Scan messages for phishing attempts';
+    }
+    if (permission == Permission.storage) {
+      return 'Access images for deepfake detection';
+    }
+    if (permission == Permission.photos) {
+      return 'Analyze images for manipulation';
     }
     return 'Required for app functionality';
   }
 
-  static IconData getIcon(Permission permission) {
-    if (permission == Permission.phone) return Icons.phone;
-    if (permission == Permission.microphone) return Icons.mic;
-    if (permission == Permission.notification) return Icons.notifications;
-    if (permission == Permission.systemAlertWindow) return Icons.layers;
-    return Icons.security;
+  /// Get icon for permission
+  static String getPermissionIcon(Permission permission) {
+    if (permission == Permission.microphone) return '🎤';
+    if (permission == Permission.notification) return '🔔';
+    if (permission == Permission.sms) return '💬';
+    if (permission == Permission.storage) return '📁';
+    if (permission == Permission.photos) return '📷';
+    return '🔒';
   }
 }
