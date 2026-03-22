@@ -77,13 +77,13 @@ async def store_batch_root(merkle_root: bytes, batch_size: int) -> dict:
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     tx_hex = w3.to_hex(tx_hash)
 
-    logger.info(f"[CHAIN] 📤 TX sent: {tx_hex} | Batch #{batch_id} | Size: {batch_size}")
+    logger.info(f"[CHAIN] 📤 TX sent: {tx_hex} | Size: {batch_size}")
 
     # Wait for receipt (with timeout)
     try:
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        # Read batch_id AFTER TX — contract increments batchCount before storing
-        batch_id = contract.functions.batchCount().call()
+        # Read batch_id AFTER TX — batchCount() returns next id, so subtract 1
+        batch_id = contract.functions.batchCount().call() - 1
         logger.info(f"[CHAIN] ✅ TX confirmed in block {receipt['blockNumber']} | Gas: {receipt['gasUsed']} | Batch: {batch_id}")
         return {
             "tx_hash": tx_hex,
@@ -93,7 +93,7 @@ async def store_batch_root(merkle_root: bytes, batch_size: int) -> dict:
             "status": "confirmed" if receipt["status"] == 1 else "failed",
         }
     except Exception as e:
-        batch_id = contract.functions.batchCount().call()
+        batch_id = contract.functions.batchCount().call() - 1
         logger.warning(f"[CHAIN] ⏳ TX sent but receipt not confirmed yet: {e}")
         return {
             "tx_hash": tx_hex,

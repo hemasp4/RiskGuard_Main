@@ -1,6 +1,7 @@
 /// Reusable production-grade result bottom sheet.
 /// Handles overflow by constraining max height and making content scrollable.
 /// Shows analysis results in a polished, consistent format across all screens.
+library;
 import 'package:flutter/material.dart';
 import 'package:risk_guard/core/theme/app_colors.dart';
 import 'package:risk_guard/core/theme/app_text_styles.dart';
@@ -19,7 +20,9 @@ class ResultBottomSheet {
     required String title,
     required String explanation,
     required Color resultColor,
-    required IconData resultIcon,
+    IconData? resultIcon, // Optional now as we compute it
+    bool isAi = false,
+    bool isThreat = false,
     Map<String, String>? metrics,
     List<String>? chips,
     Color? borderColor,
@@ -35,7 +38,9 @@ class ResultBottomSheet {
         title: title,
         explanation: explanation,
         resultColor: resultColor,
-        resultIcon: resultIcon,
+        resultIcon: resultIcon ?? (isAi ? Icons.smart_toy : Icons.person),
+        isAi: isAi,
+        isThreat: isThreat,
         metrics: metrics,
         chips: chips,
         borderColor: borderColor ?? resultColor,
@@ -45,7 +50,6 @@ class ResultBottomSheet {
     );
   }
 }
-
 class _ResultSheetContent extends StatelessWidget {
   final String title;
   final String explanation;
@@ -56,12 +60,16 @@ class _ResultSheetContent extends StatelessWidget {
   final Color borderColor;
   final String buttonText;
   final VoidCallback? onReportToBlockchain;
+  final bool isAi;
+  final bool isThreat;
 
   const _ResultSheetContent({
     required this.title,
     required this.explanation,
     required this.resultColor,
     required this.resultIcon,
+    this.isAi = false,
+    this.isThreat = false,
     this.metrics,
     this.chips,
     required this.borderColor,

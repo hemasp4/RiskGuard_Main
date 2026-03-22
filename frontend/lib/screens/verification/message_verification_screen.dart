@@ -6,6 +6,7 @@ import 'package:risk_guard/core/theme/app_colors.dart';
 import 'package:risk_guard/core/theme/app_text_styles.dart';
 import 'package:risk_guard/core/constants/app_constants.dart';
 import 'package:risk_guard/core/services/api_service.dart';
+import 'package:risk_guard/core/services/native_bridge.dart';
 import 'package:risk_guard/core/models/analysis_models.dart';
 import 'package:risk_guard/core/services/scan_history_provider.dart';
 import 'package:risk_guard/core/widgets/result_bottom_sheet.dart';
@@ -328,14 +329,28 @@ class _MessageVerificationScreenState extends State<MessageVerificationScreen> {
     if (_isAnalyzing) return;
     setState(() => _isAnalyzing = true);
 
+    // Notify overlay for text scan
+    await NativeBridge.sendMessageToOverlay({
+      'status': 'Analyzing text...',
+      'isThreat': false,
+      'threatText': 'Verifying message content...',
+    });
+
     final result = await _apiService.analyzeText(text);
 
     setState(() => _isAnalyzing = false);
 
-    if (!mounted) return;
-
     if (result.isSuccess && result.data != null) {
       final data = result.data!;
+      
+      // Success overlay update
+      await NativeBridge.sendMessageToOverlay({
+        'status': 'Scan Complete',
+        'isThreat': !data.isSafe,
+        'threatText': data.isSafe ? 'Safe Message' : 'Potential Scamm Detected!',
+        'riskScore': data.riskScore / 100,
+        'threatType': 'Text Scam',
+      });
 
       // Store in scan history
       context.read<ScanHistoryProvider>().addScan(

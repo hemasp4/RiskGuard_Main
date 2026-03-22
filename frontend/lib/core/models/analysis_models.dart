@@ -1,5 +1,6 @@
 /// Dart data models matching the FastAPI backend Pydantic schemas exactly.
 /// These are used to deserialize JSON responses from the backend.
+library;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TEXT ANALYSIS
@@ -382,6 +383,97 @@ class BlockchainReportResult {
       confidence: (evidence['confidence'] ?? 0.0).toDouble(),
       merkleRoot: evidence['merkle_root'] as String?,
       explorerUrl: json['explorer_url'] as String?,
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ADVANCED THREAT INTELLIGENCE
+// ══════════════════════════════════════════════════════════════════════════════
+
+class GlobalThreat {
+  final String id;
+  final String timestamp;
+  final String region;
+  final String category;
+  final String campaign;
+  final String severity;
+  final String description;
+  final bool blockchainVerified;
+
+  GlobalThreat({
+    required this.id,
+    required this.timestamp,
+    required this.region,
+    required this.category,
+    required this.campaign,
+    required this.severity,
+    required this.description,
+    required this.blockchainVerified,
+  });
+
+  factory GlobalThreat.fromJson(Map<String, dynamic> json) {
+    return GlobalThreat(
+      id: json['id'] ?? '',
+      timestamp: json['timestamp'] ?? '',
+      region: json['region'] ?? '',
+      category: json['category'] ?? '',
+      campaign: json['campaign'] ?? '',
+      severity: json['severity'] ?? 'LOW',
+      description: json['description'] ?? '',
+      blockchainVerified: json['blockchain_verified'] ?? false,
+    );
+  }
+}
+
+class RiskHotspot {
+  final double lat;
+  final double lng;
+  final double intensity;
+  final String label;
+
+  RiskHotspot({
+    required this.lat,
+    required this.lng,
+    required this.intensity,
+    required this.label,
+  });
+
+  factory RiskHotspot.fromJson(Map<String, dynamic> json) {
+    return RiskHotspot(
+      lat: (json['lat'] ?? 0.0).toDouble(),
+      lng: (json['lng'] ?? 0.0).toDouble(),
+      intensity: (json['intensity'] ?? 0.0).toDouble(),
+      label: json['label'] ?? '',
+    );
+  }
+}
+
+class UrlVerificationResult {
+  final String url;
+  final String status;
+  final int riskScore;
+  final String threatType;
+  final String intelligenceSource;
+  final String recommendation;
+
+  UrlVerificationResult({
+    required this.url,
+    required this.status,
+    required this.riskScore,
+    required this.threatType,
+    required this.intelligenceSource,
+    required this.recommendation,
+  });
+
+  factory UrlVerificationResult.fromJson(Map<String, dynamic> json) {
+    return UrlVerificationResult(
+      url: json['url'] ?? '',
+      status: json['status'] ?? 'SAFE',
+      riskScore: (json['riskScore'] ?? 0) as int,
+      threatType: json['threatType'] ?? '',
+      intelligenceSource: json['intelligenceSource'] ?? '',
+      recommendation: json['recommendation'] ?? '',
     );
   }
 }

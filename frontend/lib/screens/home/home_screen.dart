@@ -67,17 +67,22 @@ class _HomeScreenState extends State<HomeScreen> {
                                 width: 2,
                               ),
                             ),
-                            child: CircleAvatar(
-                              radius: 20,
-                              backgroundColor: AppColors.darkCard,
-                              backgroundImage: const NetworkImage(
-                                'https://i.pravatar.cc/150?img=11',
-                              ),
-                              onBackgroundImageError: (_, stack) {},
-                              child: const Icon(
-                                Icons.person,
-                                color: AppColors.textSecondary,
-                              ),
+                            child: Builder(
+                              builder: (context) {
+                                final img = _buildAvatarImage(userSettings);
+                                return CircleAvatar(
+                                  radius: 20,
+                                  backgroundColor: AppColors.darkCard,
+                                  backgroundImage: img,
+                                  onBackgroundImageError: img != null ? (_, __) {} : null,
+                                  child: img == null
+                                      ? const Icon(
+                                          Icons.person,
+                                          color: AppColors.textSecondary,
+                                        )
+                                      : null,
+                                );
+                              },
                             ),
                           ),
                           const SizedBox(width: 12),
@@ -173,6 +178,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       .slideY(begin: 0.1),
                   const SizedBox(height: 16),
 
+                  // World Intelligence Card (NEW)
+                  _buildIntelligenceCard(context)
+                      .animate()
+                      .fadeIn(delay: 250.ms)
+                      .slideY(begin: 0.1),
+                  const SizedBox(height: 16),
+
                   // Risk Level & Active Shields
                   Row(
                     children: [
@@ -246,7 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   const SizedBox(width: 8),
                                   Text(
                                     protectionProvider.isActive
-                                        ? '3 Active'
+                                        ? '${userSettings.activeShieldCount} Active'
                                         : 'Inactive',
                                     style: AppTextStyles.bodyMedium.copyWith(
                                       fontWeight: FontWeight.bold,
@@ -350,8 +362,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _getOverallRiskMessage(ScanHistoryProvider provider) {
     if (provider.totalScans == 0) return 'No scans yet';
-    if (provider.threatsBlocked > 0)
+    if (provider.threatsBlocked > 0) {
       return '${provider.threatsBlocked} threats found';
+    }
     return 'Your device is safe';
   }
 
@@ -385,6 +398,86 @@ class _HomeScreenState extends State<HomeScreen> {
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
+  }
+
+  ImageProvider? _buildAvatarImage(UserSettingsProvider settings) {
+    if (settings.hasProfileImage) {
+      return MemoryImage(settings.profileImageBytes!);
+    }
+    return null;
+  }
+
+  Widget _buildIntelligenceCard(BuildContext context) {
+    return GestureDetector(
+      onTap: () => Navigator.pushNamed(context, '/intelligence'),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF1E293B),
+              AppColors.darkCard,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.cyanAccent.withOpacity(0.2)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.cyanAccent.withOpacity(0.05),
+              blurRadius: 10,
+              spreadRadius: 2,
+            )
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: Colors.cyanAccent.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.public, color: Colors.cyanAccent, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'World Intelligence',
+                        style: AppTextStyles.h4.copyWith(fontSize: 16),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                      ).animate(onPlay: (c) => c.repeat()).fadeOut(duration: 500.ms).fadeIn(duration: 500.ms),
+                    ],
+                  ),
+                  Text(
+                    'Real-time global threat feed & map',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.arrow_forward_ios, color: Colors.white24, size: 16),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildLogItem(

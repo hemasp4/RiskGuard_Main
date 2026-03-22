@@ -1,10 +1,12 @@
 /// Centralized API client for RiskGuard backend communication.
 /// Handles JSON POST, multipart file upload, GET, and error handling.
 /// Privacy-first: no request payload logging.
+library;
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
+import 'native_bridge.dart';
 import '../models/analysis_models.dart';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -32,7 +34,7 @@ class ApiService {
   factory ApiService() => _instance;
   ApiService._internal();
 
-  final String _baseUrl = ApiConfig.baseUrl;
+  String get _baseUrl => ApiConfig.baseUrl;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -253,6 +255,65 @@ class ApiService {
     }
   }
 
+  /// Analyze specific video frames for faster results
+  Future<ApiResult<VideoAnalysisResult>> analyzeVideoFrames(
+    List<Uint8List> frames, {
+    String filename = 'video_frames.zip',
+  }) async {
+    try {
+      // Notify overlay that we are starting frame analysis
+      await NativeBridge.sendMessageToOverlay({
+        'status': 'Analyzing video frames...',
+        'isThreat': false,
+        'threatText': 'Processing ${frames.length} frames',
+      });
+
+      final request = http.MultipartRequest(
+        'POST',
+        _uri(ApiConfig.videoAnalysis), // Reusing same endpoint or a new one if available
+      );
+      
+      // In a real optimized system, we'd zip these or send as multiple files
+      // For now, we'll send the most representative frame or the first few
+      for (int i = 0; i < frames.length; i++) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'frames', 
+            frames[i], 
+            filename: 'frame_$i.jpg'
+          ),
+        );
+      }
+
+      final streamedResponse = await request.send().timeout(
+        ApiConfig.uploadTimeout,
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        final result = VideoAnalysisResult.fromJson(json);
+        
+        // Update overlay with result
+        await NativeBridge.sendMessageToOverlay({
+          'status': 'Analysis Complete',
+          'isThreat': result.isDeepfake,
+          'threatText': result.isDeepfake ? 'Deepfake Detected!' : 'Authentic Video',
+          'riskScore': result.deepfakeProbability,
+          'threatType': 'Video Deepfake',
+        });
+
+        return ApiResult.success(result);
+      }
+      return ApiResult.failure(
+        _parseError(response),
+        statusCode: response.statusCode,
+      );
+    } catch (e) {
+      return ApiResult.failure('Frame analysis failed: ${e.toString()}');
+    }
+  }
+
   // ── Risk Scoring ───────────────────────────────────────────────────────────
 
   Future<ApiResult<RiskScoringResult>> calculateRisk({
@@ -330,6 +391,62 @@ class ApiService {
       );
     } catch (e) {
       return ApiResult.failure('Blockchain report failed: ${e.toString()}');
+    }
+  }
+
+  // ── Advanced Intelligence ─────────────────────────────────────────────────
+
+  /// Fetch latest global threat feed
+  Future<ApiResult<List<GlobalThreat>>> getGlobalThreats() async {
+    try {
+      final response = await http
+          .get(_uri(ApiConfig.globalIntel))
+          .timeout(ApiConfig.defaultTimeout);
+      if (response.statusCode == 200) {
+        final List jsonList = jsonDecode(response.body);
+        return ApiResult.success(
+          jsonList.map((e) => GlobalThreat.fromJson(e)).toList(),
+        );
+      }
+      return ApiResult.failure(_parseError(response));
+    } catch (e) {
+      return ApiResult.failure('Failed to fetch global threats: $e');
+    }
+  }
+
+  /// Fetch risk map density data
+  Future<ApiResult<List<RiskHotspot>>> getRiskMap() async {
+    try {
+      final response = await http
+          .get(_uri(ApiConfig.riskMap))
+          .timeout(ApiConfig.defaultTimeout);
+      if (response.statusCode == 200) {
+        final List jsonList = jsonDecode(response.body);
+        return ApiResult.success(
+          jsonList.map((e) => RiskHotspot.fromJson(e)).toList(),
+        );
+      }
+      return ApiResult.failure(_parseError(response));
+    } catch (e) {
+      return ApiResult.failure('Failed to fetch risk map: $e');
+    }
+  }
+
+  /// Verify a URL/Domain against intelligence database
+  Future<ApiResult<UrlVerificationResult>> verifyUrl(String url) async {
+    try {
+      final encodedUrl = Uri.encodeComponent(url);
+      final response = await http
+          .get(_uri('${ApiConfig.verifyUrl}?url=$encodedUrl'))
+          .timeout(ApiConfig.defaultTimeout);
+      if (response.statusCode == 200) {
+        return ApiResult.success(
+          UrlVerificationResult.fromJson(jsonDecode(response.body)),
+        );
+      }
+      return ApiResult.failure(_parseError(response));
+    } catch (e) {
+      return ApiResult.failure('URL verification failed: $e');
     }
   }
 }

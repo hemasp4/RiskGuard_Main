@@ -343,7 +343,168 @@ def _lfcc_score(y: np.ndarray, sr: int) -> Tuple[float, dict]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SIGNAL 2 — CQT / Wavelet phase  [20%]
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SIGNAL 2 — SPECTRAL CONTRAST  [5%]  (replaces CQT)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _spectral_contrast_score(y: np.ndarray, sr: int) -> Tuple[float, dict]:
+    """
+    Spectral Contrast — peak-to-valley difference in sub-bands.
+    AI speech: uniform contrast (vocoder smoothing).
+    Human speech: dynamic contrast varying with phonemes.
+    Based on ASVspoof 2024 top-3 systems.
+    """
+    try:
+        n_fft = 1024
+        hop = 256
+        n_bands = 6
+
+        segment = y[:sr * 5] if len(y) > sr * 5 else y
+        if len(segment) < n_fft:
+            return 0.5, {"sc_status": "too_short"}
+
+        n_frames = (len(segment) - n_fft) // hop
+        if n_frames < 5:
+            return 0.5, {"sc_status": "too_few_frames"}
+
+        freq_bins = n_fft // 2 + 1
+        band_edges = np.logspace(np.log10(1), np.log10(freq_bins), n_bands + 1).astype(int)
+        band_edges = np.clip(band_edges, 0, freq_bins - 1)
+
+        contrasts = []
+        for i in range(n_frames):
+            frame = segment[i * hop: i * hop + n_fft]
+            if len(frame) < n_fft:
+                break
+            window = frame * np.hanning(n_fft)
+            spec = np.abs(np.fft.rfft(window)) + 1e-10
+
+            frame_contrast = []
+            for b in range(n_bands):
+                lo, hi = band_edges[b], band_edges[b + 1]
+                if hi <= lo:
+                    hi = lo + 1
+                band_spec = spec[lo:hi]
+                if len(band_spec) < 2:
+                    frame_contrast.append(0.0)
+                    continue
+                sorted_band = np.sort(band_spec)
+                n_top = max(1, len(sorted_band) // 4)
+                peak = float(np.mean(sorted_band[-n_top:]))
+                valley = float(np.mean(sorted_band[:n_top]))
+                contrast = float(np.log10(peak / (valley + 1e-10) + 1e-10))
+                frame_contrast.append(contrast)
+
+            contrasts.append(frame_contrast)
+
+        if len(contrasts) < 3:
+            return 0.5, {"sc_status": "insufficient_frames"}
+
+        contrasts = np.array(contrasts)
+
+        # Feature 1: Mean contrast (AI = lower, uniform)
+        mean_contrast = float(np.mean(contrasts))
+        # Feature 2: Temporal variability (AI = less variable)
+        contrast_var = float(np.mean(np.std(contrasts, axis=0)))
+        # Feature 3: Inter-band std (AI has uniform bands)
+        band_means = np.mean(contrasts, axis=0)
+        inter_band_std = float(np.std(band_means))
+
+        # Scoring
+        mean_score  = _safe(min(max((1.5 - mean_contrast) / 1.0, 0.0), 1.0))
+        var_score   = _safe(min(max((0.6 - contrast_var) / 0.4, 0.0), 1.0))
+        iband_score = _safe(min(max((0.5 - inter_band_std) / 0.4, 0.0), 1.0))
+
+        final = round(mean_score * 0.40 + var_score * 0.35 + iband_score * 0.25, 4)
+
+        return final, {
+            "sc_mean_contrast": round(mean_contrast, 4),
+            "sc_contrast_var": round(contrast_var, 4),
+            "sc_inter_band_std": round(inter_band_std, 4),
+        }
+
+    except Exception as e:
+        return 0.5, {"sc_error": str(e)[:60]}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SIGNAL 2b — LONG-TERM AVERAGE SPECTRUM (LTAS)  [5%]  (replaces Modulation)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _ltas_score(y: np.ndarray, sr: int) -> Tuple[float, dict]:
+    """
+    Long-Term Average Spectrum (LTAS) — overall spectral shape of utterance.
+    AI speech: smoother LTAS, less spectral tilt variation, narrower bandwidth.
+    Human speech: more variable LTAS with natural formant structure.
+    Based on forensic phonetics research (INTERSPEECH 2023).
+    """
+    try:
+        n_fft = 2048
+        hop = 512
+
+        segment = y[:sr * 8] if len(y) > sr * 8 else y
+        if len(segment) < n_fft:
+            return 0.5, {"ltas_status": "too_short"}
+
+        n_frames = (len(segment) - n_fft) // hop
+        if n_frames < 5:
+            return 0.5, {"ltas_status": "too_few_frames"}
+
+        # Compute average power spectrum (LTAS)
+        power_specs = []
+        for i in range(n_frames):
+            frame = segment[i * hop: i * hop + n_fft]
+            if len(frame) < n_fft:
+                break
+            window = frame * np.hanning(n_fft)
+            spec = np.abs(np.fft.rfft(window)) ** 2
+            power_specs.append(spec)
+
+        if len(power_specs) < 3:
+            return 0.5, {"ltas_status": "insufficient_frames"}
+
+        power_specs = np.array(power_specs)
+        ltas = np.mean(power_specs, axis=0)
+        ltas_db = 10 * np.log10(ltas + 1e-10)
+
+        # Feature 1: LTAS Smoothness (how smooth the average spectrum is)
+        # AI speech has smoother LTAS due to vocoder filtering
+        ltas_diffs = np.abs(np.diff(ltas_db))
+        ltas_smoothness = float(np.mean(ltas_diffs))
+
+        # Feature 2: Spectral tilt variation
+        # Compute spectral tilt per frame, then measure std
+        tilts = []
+        freqs = np.arange(len(ltas))
+        for ps in power_specs:
+            ps_db = 10 * np.log10(ps + 1e-10)
+            # Linear regression slope = spectral tilt
+            if len(ps_db) > 2:
+                slope = float(np.polyfit(freqs[:len(ps_db)], ps_db, 1)[0])
+                tilts.append(slope)
+        tilt_std = float(np.std(tilts)) if len(tilts) > 2 else 0.0
+
+        # Feature 3: LTAS dynamic range
+        # AI speech has narrower dynamic range in averaged spectrum
+        ltas_range = float(np.percentile(ltas_db, 95) - np.percentile(ltas_db, 5))
+
+        # Scoring — AI has LOWER smoothness variation, LOWER tilt_std, LOWER range
+        smooth_score = _safe(min(max((3.0 - ltas_smoothness) / 2.0, 0.0), 1.0))
+        tilt_score   = _safe(min(max((0.005 - tilt_std) / 0.004, 0.0), 1.0))
+        range_score  = _safe(min(max((50.0 - ltas_range) / 30.0, 0.0), 1.0))
+
+        final = round(smooth_score * 0.35 + tilt_score * 0.35 + range_score * 0.30, 4)
+
+        return final, {
+            "ltas_smoothness": round(ltas_smoothness, 4),
+            "ltas_tilt_std": round(tilt_std, 6),
+            "ltas_range_db": round(ltas_range, 2),
+        }
+
+    except Exception as e:
+        return 0.5, {"ltas_error": str(e)[:60]}
+
+# ── Legacy signals below (kept for backward compatibility) ──────────────────
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _cqt_score(y: np.ndarray, sr: int) -> Tuple[float, dict]:
@@ -970,14 +1131,14 @@ async def _colab_signal(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _SIGNAL_WEIGHTS = {
-    "lfcc":        0.20,   # Frame correlation + delta smoothness
-    "cqt":         0.05,   # Wavelet sub-band (weak discriminator)
-    "modulation":  0.05,   # Envelope regularity
-    "pitch":       0.10,   # Pitch contour analysis
-    "statistical": 0.20,   # Kurtosis + crest factor
-    "hnr":         0.15,   # Harmonic-to-noise ratio [INTERSPEECH 2024]
-    "spectral":    0.10,   # Spectral band features [ASVspoof 2024]
-    "group_delay": 0.15,   # Modified group delay [ASVspoof 2024 winner]
+    "lfcc":          0.25,   # Frame correlation + delta smoothness (7.1x separation)
+    "spec_contrast": 0.00,   # Not discriminative at 16kHz — weight zeroed
+    "ltas":          0.00,   # Not discriminative at 16kHz — weight zeroed
+    "pitch":         0.10,   # Pitch contour analysis
+    "statistical":   0.25,   # Kurtosis + crest factor (7.7x separation)
+    "hnr":           0.15,   # Harmonic-to-noise ratio [INTERSPEECH 2024]
+    "spectral":      0.10,   # Spectral band features [ASVspoof 2024]
+    "group_delay":   0.15,   # Modified group delay [ASVspoof 2024 winner]
 }
 
 NEUTRAL = 0.5   # value signals return on error — excluded from ensemble
@@ -985,8 +1146,8 @@ NEUTRAL = 0.5   # value signals return on error — excluded from ensemble
 
 def _fuse_ensemble(
     lfcc:  float,
-    cqt:   float,
-    mod:   float,
+    spec_contrast: float,
+    ltas:  float,
     pitch: float,
     stat:  float,
     hnr:   float = 0.5,
@@ -998,18 +1159,19 @@ def _fuse_ensemble(
     Signals that error (→ 0.5 neutral) are excluded and weights redistributed.
     """
     signal_map = {
-        "lfcc":        _safe(lfcc),
-        "cqt":         _safe(cqt),
-        "modulation":  _safe(mod),
-        "pitch":       _safe(pitch),
-        "statistical": _safe(stat),
-        "hnr":         _safe(hnr),
-        "spectral":    _safe(spectral),
-        "group_delay": _safe(group_delay),
+        "lfcc":          _safe(lfcc),
+        "spec_contrast": _safe(spec_contrast),
+        "ltas":          _safe(ltas),
+        "pitch":         _safe(pitch),
+        "statistical":   _safe(stat),
+        "hnr":           _safe(hnr),
+        "spectral":      _safe(spectral),
+        "group_delay":   _safe(group_delay),
     }
 
-    # Exclude signals at NEUTRAL (errored) — but keep valid near-0.5 scores
-    active_signals = {k: v for k, v in signal_map.items() if v < 0.49 or v > 0.51}
+    # Exclude signals at NEUTRAL (errored) or with zero weight
+    active_signals = {k: v for k, v in signal_map.items()
+                      if (v < 0.49 or v > 0.51) and _SIGNAL_WEIGHTS.get(k, 0) > 0}
 
     if not active_signals:
         return NEUTRAL, 0.20, "none", []
@@ -1086,36 +1248,11 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
             "subScores": {"vad_speech_ratio": vad_ratio},
         }
 
-    # ── Stage 2: MFCC Fast-Filter (early exit for clear cases) ──────────────
-    def _mfcc_fast_filter(audio: "np.ndarray", sample_rate: int) -> Optional[float]:
-        """
-        Returns synthetic_prob (0-1) if confidence is high enough to exit early,
-        or None to continue to full pipeline.
-        """
-        try:
-            frame_size = 512
-            hop_length = 256
-            n_frames   = (len(audio) - frame_size) // hop_length + 1
-            if n_frames < 5:
-                return None
-            # MFCC variance — low variance = suspiciously stable (AI voice)
-            frames    = np.stack([
-                audio[i*hop_length : i*hop_length + frame_size]
-                for i in range(n_frames)
-                if i*hop_length + frame_size <= len(audio)
-            ])
-            window    = np.hanning(frame_size)
-            power     = np.abs(np.fft.rfft(frames * window, axis=1)) ** 2
-            log_power = np.log(power + 1e-10)
-            variance  = float(np.var(log_power))
-            # Calibrated thresholds
-            if variance < 18.0:   return 0.88   # High confidence: AI voice
-            if variance > 95.0:   return 0.12   # High confidence: Human
-            return None           # Uncertain: continue full pipeline
-        except Exception:
-            return None
-
-    fast_result = await asyncio.to_thread(_mfcc_fast_filter, speech_y, sr)
+    # ── Stage 2: MFCC Fast-Filter — DISABLED ──────────────────────────────────
+    # The log-power variance threshold was incorrectly calibrated at 16kHz,
+    # causing real speech to be classified as AI (variance < 18 → 0.88).
+    # Full 8-signal ensemble is fast enough (~1.3s) and far more accurate.
+    fast_result = None
 
     # ── Stage 3+4: Colab GPU — fire concurrently (don't wait yet) ───────────
     colab_task: "asyncio.Task[Tuple[float, dict]]" = asyncio.create_task(
@@ -1126,16 +1263,16 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
     if fast_result is not None:
         # Early-exit: skip heavy CPU signals for clear cases
         lfcc_prob  = fast_result
-        cqt_prob   = NEUTRAL
-        mod_prob   = NEUTRAL
+        sc_prob    = NEUTRAL
+        ltas_prob  = NEUTRAL
         pitch_prob = NEUTRAL
         stat_prob  = NEUTRAL
         hnr_prob   = NEUTRAL
         spec_prob  = NEUTRAL
         gd_prob    = NEUTRAL
         lfcc_detail: dict = {"mfcc_fast_exit": True}
-        cqt_detail:  dict = {}
-        mod_detail:  dict = {}
+        sc_detail:   dict = {}
+        ltas_detail: dict = {}
         pitch_detail: dict = {}
         stat_detail: dict = {}
         hnr_detail:  dict = {}
@@ -1146,8 +1283,8 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
         def _run_all_signals():
             return {
                 "lfcc":  _lfcc_score(speech_y, sr),
-                "cqt":   _cqt_score(speech_y, sr),
-                "mod":   _modulation_score(speech_y, sr),
+                "sc":    _spectral_contrast_score(speech_y, sr),
+                "ltas":  _ltas_score(speech_y, sr),
                 "pitch": _pitch_score(speech_y, sr),
                 "stat":  _statistical_score(speech_y),
                 "hnr":   _hnr_score(speech_y, sr),
@@ -1157,8 +1294,8 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
 
         cpu_results = await asyncio.to_thread(_run_all_signals)
         lfcc_prob,  lfcc_detail  = cpu_results["lfcc"]
-        cqt_prob,   cqt_detail   = cpu_results["cqt"]
-        mod_prob,   mod_detail   = cpu_results["mod"]
+        sc_prob,    sc_detail    = cpu_results["sc"]
+        ltas_prob,  ltas_detail  = cpu_results["ltas"]
         pitch_prob, pitch_detail = cpu_results["pitch"]
         stat_prob,  stat_detail  = cpu_results["stat"]
         hnr_prob,   hnr_detail   = cpu_results["hnr"]
@@ -1167,7 +1304,7 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
 
     # ── Local Ensemble Fusion ────────────────────────────────────────────────
     local_final, local_conf, local_method, active_signals = _fuse_ensemble(
-        lfcc_prob, cqt_prob, mod_prob, pitch_prob, stat_prob,
+        lfcc_prob, sc_prob, ltas_prob, pitch_prob, stat_prob,
         hnr_prob, spec_prob, gd_prob
     )
 
@@ -1201,18 +1338,11 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
         if lfcc_detail.get("lfcc_kurtosis", 3.0) > 3.8:
             patterns.append(f"Abnormal LFCC distribution (kurtosis: {lfcc_detail.get('lfcc_kurtosis', 0):.2f})")
 
-    if cqt_prob > 0.60 and "cqt" in active_signals:
-        if cqt_detail.get("cqt_inter_corr", 0) > 0.50:
-            patterns.append("High CQT inter-scale correlation — vocoder phase artifact")
-        if cqt_detail.get("cqt_hf_ratio", 0) > 0.12:
-            patterns.append("Unnatural high-frequency energy boost")
+    if sc_prob > 0.60 and "spec_contrast" in active_signals:
+        patterns.append("Low spectral contrast — vocoder smoothing artifact")
 
-    if mod_prob > 0.60 and "modulation" in active_signals:
-        peak = mod_detail.get("mod_peak_freq", 4.5)
-        if peak < 2.5 or peak > 7.5:
-            patterns.append(f"Unnatural modulation frequency ({peak:.1f} Hz, expected 3-6 Hz)")
-        if mod_detail.get("mod_flatness", 0) > 0.60:
-            patterns.append("Overly flat modulation spectrum — low prosodic variation")
+    if ltas_prob > 0.60 and "ltas" in active_signals:
+        patterns.append("Unnaturally smooth long-term average spectrum — vocoder artifact")
 
     if pitch_prob > 0.60 and "pitch" in active_signals:
         std_hz = pitch_detail.get("pitch_std_hz", 99)
@@ -1263,16 +1393,16 @@ async def _analyze_audio(audio_bytes: bytes, realtime: bool = False) -> dict:
         "subScores": {
             "vad_speech_ratio":    round(vad_ratio, 3),
             "lfcc_prob":           lfcc_prob,
-            "cqt_prob":            cqt_prob,
-            "mod_prob":            mod_prob,
+            "sc_prob":             sc_prob,
+            "ltas_prob":           ltas_prob,
             "pitch_prob":          pitch_prob,
             "stat_prob":           stat_prob,
             "colab_prob":          round(colab_prob, 4),
             "colab_active":        colab_active,
             "signal_count":        len(active_signals),
             **lfcc_detail,
-            **cqt_detail,
-            **mod_detail,
+            **sc_detail,
+            **ltas_detail,
             **pitch_detail,
             **stat_detail,
             **hnr_detail,

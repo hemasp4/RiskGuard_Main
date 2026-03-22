@@ -39,7 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from PIL import Image as PILImage
 
-from api.endpoints import voice, text, risk, image, video, blockchain
+from api.endpoints import voice, text, risk, image, video, blockchain, intel
 from api.hf_client import is_hf_configured, get_model_info, query_image_model, MODELS
 from api.blockchain.config import is_blockchain_configured, get_blockchain_info
 
@@ -133,6 +133,7 @@ app.include_router(image.router,      prefix="/api/v1/analyze",     tags=["Image
 app.include_router(video.router,      prefix="/api/v1/analyze",     tags=["Video Analysis"])
 app.include_router(risk.router,       prefix="/api/v1/score",       tags=["Risk Scoring"])
 app.include_router(blockchain.router, prefix="/api/v1/blockchain",  tags=["Blockchain Evidence"])
+app.include_router(intel.router,      prefix="/api/v1/intel",       tags=["Advanced Intelligence"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -156,6 +157,9 @@ async def root():
             "video_analysis":  "/api/v1/analyze/video",
             "risk_scoring":    "/api/v1/score/calculate",
             "risk_weights":    "/api/v1/score/weights",
+            "global_intel":    "/api/v1/intel/global-feed",
+            "risk_map":       "/api/v1/intel/risk-map",
+            "verify_url":      "/api/v1/intel/verify-url",
         },
         "models": get_model_info() if is_hf_configured() else {"configured": False},
     }

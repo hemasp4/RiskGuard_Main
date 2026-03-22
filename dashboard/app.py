@@ -62,8 +62,8 @@ templates = Jinja2Templates(directory="templates")
 # ── Investigator Credentials ──────────────────────────────────────────────────
 # Plain-text for simplicity (hashed in session cookie via middleware)
 INVESTIGATORS = {
-    "admin": "cybercell2026",
-    "inspector": "riskguard2026",
+    "admin": "admin@123",
+    "inspector": "ins@123",
 }
 
 # ── Live evidence tracking (for SSE) ─────────────────────────────────────────

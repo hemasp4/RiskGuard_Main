@@ -6,18 +6,42 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/light_theme.dart';
 import 'core/theme/app_theme_provider.dart';
 import 'core/theme/app_colors.dart';
+import 'core/services/api_config.dart';
 import 'core/services/scan_history_provider.dart';
 import 'core/services/realtime_protection_provider.dart';
 import 'core/services/user_settings_provider.dart';
+import 'core/services/whitelist_provider.dart';
 import 'screens/app_initializer.dart';
 import 'screens/voice/voice_analysis_screen.dart';
 import 'screens/verification/message_verification_screen.dart';
+import 'screens/overlay/risk_guard_overlay.dart';
+import 'core/services/threat_intelligence_provider.dart';
+import 'screens/intelligence/threat_intelligence_screen.dart';
+
+@pragma('vm:entry-point')
+void overlayMain() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await ApiConfig.init();
+  } catch (e) {
+    debugPrint('🛡️ OverlayMain: ApiConfig.init failed (non-fatal): $e');
+  }
+  debugPrint('🛡️ OverlayMain: Starting overlay widget...');
+
+  runApp(const MaterialApp(
+    debugShowCheckedModeBanner: false,
+    home: RiskGuardOverlay(),
+  ));
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize Hive for cross-platform local storage
   await Hive.initFlutter();
+
+  // Load dynamic backend URL (cloudflared tunnel support)
+  await ApiConfig.init();
 
   // Set system UI overlay style for dark mode by default
   SystemChrome.setSystemUIOverlayStyle(
@@ -36,6 +60,8 @@ void main() async {
         ChangeNotifierProvider(create: (_) => ScanHistoryProvider()),
         ChangeNotifierProvider(create: (_) => RealtimeProtectionProvider()),
         ChangeNotifierProvider(create: (_) => UserSettingsProvider()),
+        ChangeNotifierProvider(create: (_) => WhitelistProvider()),
+        ChangeNotifierProvider(create: (_) => ThreatIntelligenceProvider()),
       ],
       child: const RiskGuardApp(),
     ),
@@ -58,6 +84,7 @@ class _RiskGuardAppState extends State<RiskGuardApp> {
       context.read<ScanHistoryProvider>().loadHistory();
       context.read<RealtimeProtectionProvider>().loadState();
       context.read<UserSettingsProvider>().init();
+      context.read<WhitelistProvider>().loadState();
     });
   }
 
@@ -91,6 +118,7 @@ class _RiskGuardAppState extends State<RiskGuardApp> {
       routes: {
         '/voice': (context) => const VoiceAnalysisScreen(),
         '/verification': (context) => const MessageVerificationScreen(),
+        '/intelligence': (context) => const ThreatIntelligenceScreen(),
       },
     );
   }

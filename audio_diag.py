@@ -8,16 +8,15 @@ import sys, os, glob
 sys.path.insert(0, r"c:\dev\flutter_pro\RiskGaurd1\backend")
 
 from api.endpoints.voice import (
-    _load_audio, _apply_vad, _lfcc_score, _cqt_score,
-    _modulation_score, _pitch_score, _statistical_score,
+    _load_audio, _apply_vad, _lfcc_score,
+    _spectral_contrast_score, _ltas_score,
+    _pitch_score, _statistical_score,
     _hnr_score, _spectral_score, _group_delay_score,
     _fuse_ensemble, NEUTRAL
 )
 
 SAMPLES_DIR = r"c:\dev\flutter_pro\RiskGaurd1\audio_samples"
 OUT_FILE = r"c:\dev\flutter_pro\RiskGaurd1\audio_results.txt"
-
-SIGNAL_NAMES = ["lfcc","cqt","mod","pitch","stat","hnr","spec","gd"]
 
 def analyze_file(filepath, fout):
     name = os.path.relpath(filepath, SAMPLES_DIR)
@@ -41,8 +40,8 @@ def analyze_file(filepath, fout):
     
     # Run all 8 signals
     lfcc_prob,  lfcc_d  = _lfcc_score(speech_y, sr)
-    cqt_prob,   cqt_d   = _cqt_score(speech_y, sr)
-    mod_prob,   mod_d   = _modulation_score(speech_y, sr)
+    sc_prob,    sc_d    = _spectral_contrast_score(speech_y, sr)
+    ltas_prob,  ltas_d  = _ltas_score(speech_y, sr)
     pitch_prob, pitch_d = _pitch_score(speech_y, sr)
     stat_prob,  stat_d  = _statistical_score(speech_y)
     hnr_prob,   hnr_d   = _hnr_score(speech_y, sr)
@@ -51,7 +50,7 @@ def analyze_file(filepath, fout):
     
     # Fuse (all 8)
     final, conf, method, active = _fuse_ensemble(
-        lfcc_prob, cqt_prob, mod_prob, pitch_prob, stat_prob,
+        lfcc_prob, sc_prob, ltas_prob, pitch_prob, stat_prob,
         hnr_prob, spec_prob, gd_prob
     )
     
@@ -59,8 +58,8 @@ def analyze_file(filepath, fout):
     
     fout.write(f"\n  {name}  ({duration:.1f}s, vad={vad_ratio:.2f})\n")
     fout.write(f"    LFCC:        {lfcc_prob:.4f}  {lfcc_d}\n")
-    fout.write(f"    CQT:         {cqt_prob:.4f}  {cqt_d}\n")
-    fout.write(f"    Modulation:  {mod_prob:.4f}  {mod_d}\n")
+    fout.write(f"    SpecContr:   {sc_prob:.4f}  {sc_d}\n")
+    fout.write(f"    LTAS:        {ltas_prob:.4f}  {ltas_d}\n")
     fout.write(f"    Pitch:       {pitch_prob:.4f}  {pitch_d}\n")
     fout.write(f"    Statistical: {stat_prob:.4f}  {stat_d}\n")
     fout.write(f"    HNR:         {hnr_prob:.4f}  {hnr_d}\n")
@@ -71,7 +70,7 @@ def analyze_file(filepath, fout):
     
     return {
         "name": name, "final": final, "is_ai": is_ai,
-        "lfcc": lfcc_prob, "cqt": cqt_prob, "mod": mod_prob,
+        "lfcc": lfcc_prob, "sc": sc_prob, "ltas": ltas_prob,
         "pitch": pitch_prob, "stat": stat_prob,
         "hnr": hnr_prob, "spec": spec_prob, "gd": gd_prob,
     }
@@ -110,13 +109,13 @@ if __name__ == "__main__":
             fout.write(f"    {r['name']:40s}  final={r['final']:.4f}  {label}\n")
         
         # Averages
-        keys = ["lfcc","cqt","mod","pitch","stat","hnr","spec","gd","final"]
+        keys = ["lfcc","sc","ltas","pitch","stat","hnr","spec","gd","final"]
         if results_ai:
             avg_ai = {k: sum(r[k] for r in results_ai)/len(results_ai) for k in keys}
-            fout.write(f"\n  AVG AI:   lfcc={avg_ai['lfcc']:.3f} cqt={avg_ai['cqt']:.3f} mod={avg_ai['mod']:.3f} pitch={avg_ai['pitch']:.3f} stat={avg_ai['stat']:.3f} hnr={avg_ai['hnr']:.3f} spec={avg_ai['spec']:.3f} gd={avg_ai['gd']:.3f} -> final={avg_ai['final']:.3f}\n")
+            fout.write(f"\n  AVG AI:   lfcc={avg_ai['lfcc']:.3f} sc={avg_ai['sc']:.3f} ltas={avg_ai['ltas']:.3f} pitch={avg_ai['pitch']:.3f} stat={avg_ai['stat']:.3f} hnr={avg_ai['hnr']:.3f} spec={avg_ai['spec']:.3f} gd={avg_ai['gd']:.3f} -> final={avg_ai['final']:.3f}\n")
         
         if results_real:
             avg_real = {k: sum(r[k] for r in results_real)/len(results_real) for k in keys}
-            fout.write(f"  AVG REAL: lfcc={avg_real['lfcc']:.3f} cqt={avg_real['cqt']:.3f} mod={avg_real['mod']:.3f} pitch={avg_real['pitch']:.3f} stat={avg_real['stat']:.3f} hnr={avg_real['hnr']:.3f} spec={avg_real['spec']:.3f} gd={avg_real['gd']:.3f} -> final={avg_real['final']:.3f}\n")
+            fout.write(f"  AVG REAL: lfcc={avg_real['lfcc']:.3f} sc={avg_real['sc']:.3f} ltas={avg_real['ltas']:.3f} pitch={avg_real['pitch']:.3f} stat={avg_real['stat']:.3f} hnr={avg_real['hnr']:.3f} spec={avg_real['spec']:.3f} gd={avg_real['gd']:.3f} -> final={avg_real['final']:.3f}\n")
     
     print(f"Results written to {OUT_FILE}")

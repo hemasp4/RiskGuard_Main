@@ -29,3 +29,5 @@ web3>=7.0.0                # Polygon smart contract interaction
 # ── Optional but recommended ──────────────────────────────────────────────────
 # Install for faster/better results:
 opencv-python-headless>=4.9.0    # DCT (image) + optical flow (video)
+moviepy>=2.0.0                  # Audio extraction from video
+pydub>=0.25.1                    # Audio manipulation

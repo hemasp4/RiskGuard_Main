@@ -34,6 +34,10 @@ backend/.env
 backend/.env.*
 backend/logs/
 *.log
+dashboard/__pycache__/
+dashboard/**/__pycache__/
+dashboard/**/*.pyc
+dashboard/venv/ 
 
 # ══════════════════════════════════════════════
 # IDE / Editor

@@ -3,15 +3,18 @@ import 'dart:io' as io;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:risk_guard/core/theme/app_colors.dart';
 import 'package:risk_guard/core/theme/app_text_styles.dart';
 import 'package:risk_guard/core/constants/app_constants.dart';
 import 'package:risk_guard/core/services/api_service.dart';
+import 'package:risk_guard/core/services/native_bridge.dart';
 import 'package:risk_guard/core/models/analysis_models.dart';
 import 'package:risk_guard/core/services/scan_history_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -34,7 +37,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
   // Analysis states
   AnalysisState _currentState = AnalysisState.idle;
   int _riskScore = 0;
-  String _identityStatus = "Unverified";
   String _analysisExplanation = '';
   double _confidence = 0.0;
   List<String> _detectedPatterns = [];
@@ -114,7 +116,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
       setState(() {
         _currentState = AnalysisState.idle;
         _riskScore = 0;
-        _identityStatus = "Unverified";
         _analysisExplanation = '';
         _confidence = 0.0;
         _detectedPatterns = [];
@@ -127,8 +128,83 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
   }
 
   Future<String> _getTempPath() async {
-    // Use a simple temp path for mobile
-    return '/tmp/riskguard_recording_${DateTime.now().millisecondsSinceEpoch}.wav';
+    // path_provider gives a valid temp dir on Android, iOS and desktop
+    final dir = await getTemporaryDirectory();
+    return '${dir.path}/riskguard_recording_${DateTime.now().millisecondsSinceEpoch}.wav';
+  }
+
+  /// Pick an existing audio file and send it directly to the backend.
+  Future<void> _pickAndAnalyzeFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      Uint8List? bytes = file.bytes;
+      if (bytes == null && file.path != null) {
+        bytes = await io.File(file.path!).readAsBytes();
+      }
+      if (bytes == null || bytes.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not read audio file')),
+          );
+        }
+        return;
+      }
+
+      setState(() {
+        _currentState = AnalysisState.analyzing;
+        _currentAmplitude = 0.0;
+      });
+
+      final apiResult = await _apiService.analyzeVoice(
+        bytes,
+        filename: file.name,
+      );
+
+      if (mounted) {
+        if (apiResult.isSuccess && apiResult.data != null) {
+          final data = apiResult.data!;
+          setState(() {
+            _currentState = AnalysisState.complete;
+            _riskScore = (data.syntheticProbability * 10).round().clamp(0, 10);
+            _analysisExplanation = data.explanation;
+            _confidence = data.confidence;
+            _detectedPatterns = data.detectedPatterns;
+          });
+          context.read<ScanHistoryProvider>().addScan(
+            ScanHistoryEntry(
+              id: const Uuid().v4(),
+              type: ScanType.voice,
+              timestamp: DateTime.now(),
+              riskLevel: _riskScore >= 7 ? 'HIGH' : (_riskScore >= 4 ? 'MEDIUM' : 'LOW'),
+              riskScore: _riskScore * 10,
+              summary: 'Voice: ${data.isLikelyAI ? "AI Detected" : "Human Verified"}',
+              explanation: data.explanation,
+            ),
+          );
+        } else {
+          setState(() {
+            _currentState = AnalysisState.complete;
+            _riskScore = 0;
+            _analysisExplanation = apiResult.error ?? 'Analysis failed';
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _currentState = AnalysisState.complete;
+          _riskScore = 0;
+          _analysisExplanation = 'File upload error: $e';
+        });
+      }
+    }
   }
 
   Future<void> _stopAndAnalyze() async {
@@ -169,7 +245,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
           setState(() {
             _currentState = AnalysisState.complete;
             _riskScore = 0;
-            _identityStatus = 'No Audio';
             _analysisExplanation =
                 'Could not capture audio data. Please try again.';
           });
@@ -177,19 +252,35 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
         return;
       }
 
+      // Notify overlay for voice scan
+      await NativeBridge.sendMessageToOverlay({
+        'status': 'Analyzing voice...',
+        'isThreat': false,
+        'threatText': 'Verifying waveform patterns...',
+      });
+
       // Send to backend
       final result = await _apiService.analyzeVoice(audioBytes);
 
       if (mounted) {
         if (result.isSuccess && result.data != null) {
           final data = result.data!;
+
+          // Success overlay update
+          await NativeBridge.sendMessageToOverlay({
+            'status': 'Scan Complete',
+            'isThreat': data.isLikelyAI,
+            'threatText': data.isLikelyAI 
+                ? 'AI Voice Detected!' 
+                : 'Authentic Voice',
+            'riskScore': data.syntheticProbability,
+            'threatType': 'AI Voice',
+          });
+
           setState(() {
             _currentState = AnalysisState.complete;
             // Map synthetic probability (0.0-1.0) to risk score (0-10)
             _riskScore = (data.syntheticProbability * 10).round().clamp(0, 10);
-            _identityStatus = data.isLikelyAI
-                ? 'Synthetic Pattern'
-                : 'Human Voice';
             _analysisExplanation = data.explanation;
             _confidence = data.confidence;
             _detectedPatterns = data.detectedPatterns;
@@ -214,7 +305,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
           setState(() {
             _currentState = AnalysisState.complete;
             _riskScore = 0;
-            _identityStatus = 'Error';
             _analysisExplanation = result.error ?? 'Analysis failed';
           });
         }
@@ -224,7 +314,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
         setState(() {
           _currentState = AnalysisState.complete;
           _riskScore = 0;
-          _identityStatus = 'Error';
           _analysisExplanation = 'Analysis error: $e';
         });
       }
@@ -295,11 +384,8 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.darkBackground,
-      body: SafeArea(
-        child: Column(
-          children: [
+    return Column(
+      children: [
             // Header
             Padding(
               padding: const EdgeInsets.all(AppConstants.spaceLarge),
@@ -506,33 +592,45 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
 
                           const SizedBox(width: 16),
 
-                          // Identity Card
+                          // Upload Card (Replacing Identity)
                           Expanded(
                             child: _buildMetricCard(
-                              title: 'Identity',
-                              icon: Icons.fingerprint_rounded,
-                              iconColor: AppColors.textSecondary,
-                              content: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    _identityStatus,
-                                    style: AppTextStyles.h3.copyWith(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
+                              title: 'Library',
+                              icon: Icons.library_music_rounded,
+                              iconColor: AppColors.primaryGold,
+                              content: InkWell(
+                                onTap: _pickAndAnalyzeFile,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Upload',
+                                      style: AppTextStyles.h3.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: AppColors.primaryGold,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _currentState == AnalysisState.idle
-                                        ? 'Waiting...'
-                                        : 'No match found',
-                                    style: AppTextStyles.bodySmall.copyWith(
-                                      color: AppColors.textSecondary,
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          'Select File',
+                                          style: AppTextStyles.bodySmall.copyWith(
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        const Icon(
+                                          Icons.add_circle_outline_rounded,
+                                          size: 14,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           ),
@@ -567,6 +665,8 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
                         ),
                       ),
 
+
+
                       const SizedBox(height: 120), // Bottom padding for nav bar
                     ],
                   ),
@@ -574,8 +674,6 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
               ),
             ),
           ],
-        ),
-      ),
     );
   }
 

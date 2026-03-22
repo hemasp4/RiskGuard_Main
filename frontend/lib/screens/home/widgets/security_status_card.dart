@@ -115,13 +115,18 @@ class _SecurityStatusCardState extends State<SecurityStatusCard>
                     ),
                     const Spacer(),
                     // Large percentage
-                    Text(
-                      '$percentage%',
-                      style: AppTextStyles.display.copyWith(
-                        color: AppColors.textOnGold,
-                        fontSize: 56,
-                        fontWeight: FontWeight.bold,
-                        height: 1,
+                    Flexible(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          '$percentage%',
+                          style: AppTextStyles.display.copyWith(
+                            color: AppColors.textOnGold,
+                            fontSize: 56,
+                            fontWeight: FontWeight.bold,
+                            height: 1,
+                          ),
+                        ),
                       ),
                     ),
                   ],

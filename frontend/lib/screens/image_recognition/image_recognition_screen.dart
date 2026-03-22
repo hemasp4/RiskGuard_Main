@@ -9,10 +9,12 @@ import 'package:uuid/uuid.dart';
 import 'package:risk_guard/core/theme/app_colors.dart';
 import 'package:risk_guard/core/theme/app_text_styles.dart';
 import 'package:risk_guard/core/services/api_service.dart';
+import 'package:risk_guard/core/services/native_bridge.dart';
 import 'package:risk_guard/core/models/analysis_models.dart';
 import 'package:risk_guard/core/services/scan_history_provider.dart';
 import 'package:risk_guard/core/widgets/result_bottom_sheet.dart';
 import 'package:risk_guard/screens/blockchain/blockchain_report_screen.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 /// Image Recognition/Deepfake Detection screen
 class ImageRecognitionScreen extends StatefulWidget {
@@ -22,10 +24,12 @@ class ImageRecognitionScreen extends StatefulWidget {
   State<ImageRecognitionScreen> createState() => _ImageRecognitionScreenState();
 }
 
-class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
+class _ImageRecognitionScreenState extends State<ImageRecognitionScreen>
+    with SingleTickerProviderStateMixin {
   final ImagePicker _picker = ImagePicker();
   final ApiService _apiService = ApiService();
   XFile? _selectedFile;
+  Uint8List? _imageBytes; // for cross-platform display
   Uint8List? _lastFileBytes;
   bool _isVideo = false;
   bool _isAnalyzing = false;
@@ -38,17 +42,19 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
       );
 
       if (image != null) {
+        final bytes = await image.readAsBytes();
         setState(() {
           _selectedFile = image;
+          _imageBytes = bytes;
           _isVideo = false;
         });
         _analyzeMedia();
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error selecting image: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting image: $e')),
+        );
       }
     }
   }
@@ -63,15 +69,16 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
       if (video != null) {
         setState(() {
           _selectedFile = video;
+          _imageBytes = null;
           _isVideo = true;
         });
         _analyzeMedia();
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error selecting video: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting video: $e')),
+        );
       }
     }
   }
@@ -81,7 +88,6 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
     setState(() => _isAnalyzing = true);
 
     try {
-      // Read file bytes
       Uint8List? fileBytes;
       if (kIsWeb) {
         fileBytes = await _selectedFile!.readAsBytes();
@@ -92,23 +98,46 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
       if (fileBytes.isEmpty) {
         if (mounted) {
           setState(() => _isAnalyzing = false);
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Could not read file')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not read file')),
+          );
         }
         return;
       }
 
-      // Store for blockchain reporting
       _lastFileBytes = fileBytes;
 
       if (_isVideo) {
-        // Video analysis
-        final result = await _apiService.analyzeVideo(
-          fileBytes,
-          filename: _selectedFile!.name,
-        );
-        setState(() => _isAnalyzing = false);
+        // Fast Frame Sampling Optimization
+        final List<Uint8List> sampledFrames = [];
+        if (!kIsWeb) {
+          // Extract 3 representative frames (start, middle, end)
+          final offsets = [0, 5000, 10000]; // ms
+          for (var offset in offsets) {
+            final frame = await VideoThumbnail.thumbnailData(
+              video: _selectedFile!.path,
+              imageFormat: ImageFormat.JPEG,
+              maxWidth: 512,
+              quality: 75,
+              timeMs: offset,
+            );
+            if (frame != null) sampledFrames.add(frame);
+          }
+        }
+
+        final result = sampledFrames.isNotEmpty
+            ? await _apiService.analyzeVideoFrames(
+                sampledFrames,
+                filename: _selectedFile!.name,
+              )
+            : await _apiService.analyzeVideo(
+                fileBytes,
+                filename: _selectedFile!.name,
+              );
+
+        setState(() {
+          _isAnalyzing = false;
+        });
         if (mounted) {
           if (result.isSuccess && result.data != null) {
             _showVideoResult(result.data!);
@@ -117,14 +146,33 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
           }
         }
       } else {
-        // Image analysis
+        // Notify overlay for image scan
+        await NativeBridge.sendMessageToOverlay({
+          'status': 'Analyzing image...',
+          'isThreat': false,
+          'threatText': 'Scanning pixels...',
+        });
+
         final result = await _apiService.analyzeImage(
           fileBytes,
           filename: _selectedFile!.name,
         );
-        setState(() => _isAnalyzing = false);
+        
+        setState(() {
+          _isAnalyzing = false;
+        });
         if (mounted) {
           if (result.isSuccess && result.data != null) {
+            // Success overlay update
+            await NativeBridge.sendMessageToOverlay({
+              'status': 'Scan Complete',
+              'isThreat': result.data!.isAiGenerated,
+              'threatText': result.data!.isAiGenerated 
+                  ? 'AI-Generated Content Detected!' 
+                  : 'Authentic Image',
+              'riskScore': result.data!.aiGeneratedProbability,
+              'threatType': 'AI Image',
+            });
             _showImageResult(result.data!);
           } else {
             _showErrorResult(result.error ?? 'Image analysis failed');
@@ -156,25 +204,35 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
       ),
     );
 
-    final bool isSafe = !data.isAiGenerated;
+    final bool isAi = data.isAiGenerated;
+    final bool hasThreat = data.aiGeneratedProbability > 0.65; // High prob counts as threat if it's deepfake-like
+
+    Color resultColor = AppColors.successGreen;
+    if (isAi && !hasThreat) {
+      resultColor = AppColors.warning;
+    } else if (hasThreat) {
+      resultColor = AppColors.dangerRed;
+    }
+
     ResultBottomSheet.show(
       context: context,
-      title: isSafe ? 'Authentic Image' : 'AI-Generated Detected',
+      title: hasThreat
+          ? 'Deepfake Threat Detected'
+          : (isAi ? 'AI-Generated Image' : 'Authentic Image'),
       explanation: data.explanation,
-      resultColor: isSafe ? AppColors.successGreen : AppColors.dangerRed,
-      resultIcon: isSafe ? Icons.check_circle_rounded : Icons.warning_rounded,
+      resultColor: resultColor,
+      isAi: isAi,
+      isThreat: hasThreat,
       metrics: {
-        'AI Probability': '${(data.aiGeneratedProbability * 100).round()}%',
+        'AI Prob': '${(data.aiGeneratedProbability * 100).round()}%',
         'Confidence': '${(data.confidence * 100).round()}%',
       },
       chips: data.detectedPatterns,
-      onReportToBlockchain: !isSafe && _lastFileBytes != null
-          ? () => _navigateToBlockchainReport(
-              threatType: 'AI-Generated Image',
-              aiResult: 'AI-Generated',
-              confidence: data.aiGeneratedProbability,
-            )
-          : null,
+      onReportToBlockchain: () => _navigateToBlockchainReport(
+        threatType: hasThreat ? 'Deepfake' : 'AI-Generated',
+        aiResult: isAi ? 'AI' : 'Human',
+        confidence: data.aiGeneratedProbability,
+      ),
     );
   }
 
@@ -193,25 +251,36 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
       ),
     );
 
-    final bool isSafe = !data.isDeepfake;
+    final bool isAi = data.deepfakeProbability > 0.45; // Lowered threshold to be more sensitive
+    final bool hasThreat = data.isDeepfake;
+
+    Color resultColor = AppColors.successGreen;
+    if (isAi && !hasThreat) {
+      resultColor = AppColors.warning;
+    } else if (hasThreat) {
+      resultColor = AppColors.dangerRed;
+    }
+
     ResultBottomSheet.show(
       context: context,
-      title: isSafe ? 'Authentic Video' : 'Deepfake Detected',
+      title: hasThreat
+          ? 'Deepfake Video detected'
+          : (isAi ? 'AI-Generated Video' : 'Authentic Video'),
       explanation: data.explanation,
-      resultColor: isSafe ? AppColors.successGreen : AppColors.dangerRed,
-      resultIcon: isSafe ? Icons.check_circle_rounded : Icons.warning_rounded,
+      resultColor: resultColor,
+      isAi: isAi,
+      isThreat: hasThreat,
       metrics: {
         'Deepfake Prob': '${(data.deepfakeProbability * 100).round()}%',
         'Confidence': '${(data.confidence * 100).round()}%',
         'Frames': '${data.analyzedFrames}',
       },
-      onReportToBlockchain: !isSafe && _lastFileBytes != null
-          ? () => _navigateToBlockchainReport(
-              threatType: 'Deepfake Video',
-              aiResult: 'Deepfake',
-              confidence: data.deepfakeProbability,
-            )
-          : null,
+      chips: data.detectedPatterns,
+      onReportToBlockchain: () => _navigateToBlockchainReport(
+        threatType: 'Deepfake Video',
+        aiResult: 'Deepfake',
+        confidence: data.deepfakeProbability,
+      ),
     );
   }
 
@@ -248,6 +317,16 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final scanHistory = context.watch<ScanHistoryProvider>();
+    
+    // Global filter for image and video scans
+    final relevantScans = scanHistory.entries
+        .where((s) => s.type == ScanType.image || s.type == ScanType.video)
+        .toList();
+        
+    // Limited list for "Recent Scans" display
+    final recentScans = relevantScans.take(6).toList();
+
     return Scaffold(
       backgroundColor: AppColors.darkBackground,
       body: SafeArea(
@@ -256,253 +335,395 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Deepfake Detector',
-                style: AppTextStyles.h2.copyWith(fontWeight: FontWeight.bold),
+              // ── Header ──────────────────────────────────────────────────
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Deepfake Detector',
+                        style: AppTextStyles.h2
+                            .copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'AI-powered image & video analysis',
+                        style: AppTextStyles.bodySmall
+                            .copyWith(color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryGold.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: AppColors.primaryGold.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.image_search_rounded,
+                      color: AppColors.primaryGold,
+                      size: 24,
+                    ),
+                  ),
+                ],
               ).animate().fadeIn().slideX(begin: -0.1),
 
               const SizedBox(height: 24),
 
-              // Scanner Area
-              Container(
-                height: 300,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: AppColors.darkCard,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: AppColors.border),
-                  image: _selectedFile != null && !_isVideo && !kIsWeb
-                      ? DecorationImage(
-                          image: FileImage(io.File(_selectedFile!.path)),
-                          fit: BoxFit.cover,
-                          opacity: _isAnalyzing ? 0.5 : 1.0,
-                        )
-                      : null,
-                ),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Empty State or Video Placeholder
-                    if (_selectedFile == null)
-                      Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.add_photo_alternate_rounded,
-                            size: 64,
-                            color: AppColors.textSecondary.withValues(
-                              alpha: 0.3,
+              // ── Scanner Area ────────────────────────────────────────────
+              GestureDetector(
+                onTap: _isAnalyzing ? null : () => _pickImage(ImageSource.gallery),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 400),
+                  curve: Curves.easeInOut,
+                  height: _selectedFile != null ? 320 : 260,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: AppColors.darkCard,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: _isAnalyzing
+                          ? AppColors.primaryPurple.withValues(alpha: 0.6)
+                          : _selectedFile != null
+                              ? AppColors.primaryGold.withValues(alpha: 0.4)
+                              : AppColors.border,
+                      width: _isAnalyzing ? 2 : 1,
+                    ),
+                    boxShadow: _isAnalyzing
+                        ? [
+                            BoxShadow(
+                              color: AppColors.primaryPurple.withValues(alpha: 0.15),
+                              blurRadius: 24,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(23),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        // ── Image Preview (cross-platform) ────────────
+                        if (_imageBytes != null && !_isVideo)
+                          AnimatedOpacity(
+                            duration: const Duration(milliseconds: 300),
+                            opacity: _isAnalyzing ? 0.4 : 1.0,
+                            child: Image.memory(
+                              _imageBytes!,
+                              width: double.infinity,
+                              height: double.infinity,
+                              fit: BoxFit.cover,
                             ),
                           ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Select media to scan',
-                            style: AppTextStyles.bodyMedium.copyWith(
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      )
-                    else if (_isVideo)
-                      Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.video_file_rounded,
-                            size: 64,
-                            color: AppColors.primaryGold.withValues(alpha: 0.5),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Video Selected',
-                            style: AppTextStyles.h3.copyWith(
-                              color: Colors.white,
-                            ),
-                          ),
-                          Text(
-                            _selectedFile!.name,
-                            style: AppTextStyles.bodySmall.copyWith(
-                              color: AppColors.textSecondary,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
 
-                    // Scanning Animation
-                    if (_isAnalyzing)
-                      Container(
-                            width: double.infinity,
-                            height: 4,
-                            color: AppColors.primaryPurple,
-                          )
-                          .animate(
-                            onPlay: (controller) =>
-                                controller.repeat(reverse: true),
-                          )
-                          .slideY(begin: -40, end: 40, duration: 2.seconds),
-
-                    if (_isAnalyzing)
-                      const Positioned(
-                        bottom: 20,
-                        child: Text(
-                          'Analyzing structure...',
-                          style: TextStyle(color: AppColors.textPrimary),
-                        ),
-                      ),
-                  ],
-                ),
-              ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
-
-              const SizedBox(height: 24),
-
-              // Stats Row
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  // Media Scanned with Thumbnail
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 48,
-                        height: 48,
-                        padding: const EdgeInsets.all(
-                          2,
-                        ), // Small gap for border
-                        decoration: BoxDecoration(
-                          color: AppColors.darkCard,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: AppColors.successGreen),
-                        ),
-                        child: ClipOval(
-                          child: Stack(
-                            alignment: Alignment.center,
+                        // ── Empty State ───────────────────────────────
+                        if (_selectedFile == null)
+                          Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Image(
-                                image: AssetImage(
-                                  'assets/images/placeholder_image.png',
+                              Container(
+                                padding: const EdgeInsets.all(20),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primaryGold.withValues(alpha: 0.08),
+                                  shape: BoxShape.circle,
                                 ),
-                                fit: BoxFit.cover,
-                                width: double.infinity,
-                                height: double.infinity,
+                                child: Icon(
+                                  Icons.add_photo_alternate_rounded,
+                                  size: 48,
+                                  color: AppColors.primaryGold.withValues(alpha: 0.5),
+                                ),
                               ),
-                              Container(color: Colors.black26), // Dim overlay
-                              const Icon(
-                                Icons.image,
-                                color: Colors.white,
-                                size: 20,
+                              const SizedBox(height: 16),
+                              Text(
+                                'Tap to select media',
+                                style: AppTextStyles.bodyMedium.copyWith(
+                                  color: AppColors.textSecondary,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Image or video for AI analysis',
+                                style: AppTextStyles.labelSmall.copyWith(
+                                  color: AppColors.textTertiary,
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Media Scanned',
-                        style: AppTextStyles.labelSmall.copyWith(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
 
-                  // Scan Video Button (Replaces Threats Found)
-                  GestureDetector(
-                    onTap: _pickVideo,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: AppColors.primaryGold.withValues(alpha: 0.1),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: AppColors.primaryGold),
+                        // ── Video Placeholder ─────────────────────────
+                        if (_isVideo && _selectedFile != null)
+                          Container(
+                            color: AppColors.darkCard,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primaryGold.withValues(alpha: 0.1),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    Icons.video_file_rounded,
+                                    size: 48,
+                                    color: AppColors.primaryGold.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Video Selected',
+                                  style: AppTextStyles.h4.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                                  child: Text(
+                                    _selectedFile!.name,
+                                    style: AppTextStyles.bodySmall
+                                        .copyWith(color: AppColors.textSecondary),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                          child: const Icon(
-                            Icons.video_camera_back_rounded,
-                            color: AppColors.primaryGold,
-                            size: 24,
+
+                        // ── Scanning Overlay ──────────────────────────
+                        if (_isAnalyzing) ...[
+                          // Dark overlay with blur
+                          Container(
+                            color: Colors.black.withValues(alpha: 0.3),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Scan Video',
-                          style: AppTextStyles.labelSmall.copyWith(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.bold,
+                          // Scanner line animation
+                          Container(
+                            width: double.infinity,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Colors.transparent,
+                                  AppColors.primaryPurple.withValues(alpha: 0.8),
+                                  AppColors.primaryGold,
+                                  AppColors.primaryPurple.withValues(alpha: 0.8),
+                                  Colors.transparent,
+                                ],
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.primaryPurple.withValues(alpha: 0.5),
+                                  blurRadius: 16,
+                                  spreadRadius: 4,
+                                ),
+                              ],
+                            ),
+                          )
+                              .animate(
+                                onPlay: (c) => c.repeat(reverse: true),
+                              )
+                              .slideY(begin: -40, end: 40, duration: 2.seconds),
+                          // Status text
+                          Positioned(
+                            bottom: 20,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.darkBackground.withValues(alpha: 0.85),
+                                borderRadius: BorderRadius.circular(30),
+                                border: Border.all(
+                                  color: AppColors.primaryPurple.withValues(alpha: 0.4),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: AppColors.primaryGold,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    _isVideo
+                                        ? 'Analyzing frames...'
+                                        : 'Analyzing structure...',
+                                    style: AppTextStyles.bodySmall.copyWith(
+                                      color: AppColors.textPrimary,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),
-                ],
-              ).animate().fadeIn(delay: 400.ms).slideX(begin: 0.1),
+                ),
+              ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
-              // Action Buttons
-              Center(
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: _isAnalyzing
-                        ? null
-                        : () => _pickImage(ImageSource.gallery),
-                    icon: const Icon(Icons.photo_library_rounded),
-                    label: const Text(
-                      'Select from Gallery',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    style: ButtonStyle(
-                      backgroundColor: WidgetStateProperty.resolveWith((
-                        states,
-                      ) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return Colors.red; // User requested Red on hover
-                        }
-                        return AppColors.primaryGold;
-                      }),
-                      foregroundColor: WidgetStateProperty.all(
-                        AppColors.darkBackground,
+              // ── Action Buttons ──────────────────────────────────────────
+              Row(
+                children: [
+                  // Select Image
+                  Expanded(
+                    flex: 3,
+                    child: ElevatedButton.icon(
+                      onPressed: _isAnalyzing
+                          ? null
+                          : () => _pickImage(ImageSource.gallery),
+                      icon: const Icon(Icons.photo_library_rounded, size: 20),
+                      label: const Text(
+                        'Select Image',
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      padding: WidgetStateProperty.all(
-                        const EdgeInsets.symmetric(vertical: 18),
-                      ),
-                      shape: WidgetStateProperty.all(
-                        RoundedRectangleBorder(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primaryGold,
+                        foregroundColor: AppColors.darkBackground,
+                        disabledBackgroundColor:
+                            AppColors.primaryGold.withValues(alpha: 0.4),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
                         ),
                       ),
                     ),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  // Select Video
+                  Expanded(
+                    flex: 2,
+                    child: OutlinedButton.icon(
+                      onPressed: _isAnalyzing ? null : _pickVideo,
+                      icon: const Icon(Icons.videocam_rounded, size: 20),
+                      label: const Text(
+                        'Video',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.primaryGold,
+                        side: BorderSide(
+                          color: AppColors.primaryGold.withValues(alpha: 0.5),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ).animate().fadeIn(delay: 300.ms),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
-              const SizedBox(height: 32),
-
-              // Recent Scans
-              Text(
-                'Recent Scans',
-                style: AppTextStyles.h4,
-              ).animate().fadeIn(delay: 500.ms),
-              const SizedBox(height: 16),
-              SizedBox(
-                height: 100,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
+              // ── Stats Row ───────────────────────────────────────────────
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.darkCard,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
                   children: [
-                    _buildRecentScanItem(Icons.image, AppColors.successGreen),
-                    _buildRecentScanItem(Icons.video_file, AppColors.dangerRed),
-                    _buildRecentScanItem(Icons.image, AppColors.successGreen),
-                    _buildRecentScanItem(Icons.image, AppColors.successGreen),
+                    _buildStatItem(
+                      Icons.image_rounded,
+                      '${relevantScans.where((s) => s.type == ScanType.image).length}',
+                      'Images',
+                      AppColors.primaryGold,
+                    ),
+                    _buildStatDivider(),
+                    _buildStatItem(
+                      Icons.video_file_rounded,
+                      '${relevantScans.where((s) => s.type == ScanType.video).length}',
+                      'Videos',
+                      AppColors.primaryPurple,
+                    ),
+                    _buildStatDivider(),
+                    _buildStatItem(
+                      Icons.warning_amber_rounded,
+                      '${relevantScans.where((s) => s.riskLevel == 'HIGH').length}',
+                      'Threats',
+                      AppColors.dangerRed,
+                    ),
+                    _buildStatDivider(),
+                    _buildStatItem(
+                      Icons.check_circle_outline_rounded,
+                      '${relevantScans.where((s) => s.riskLevel == 'LOW' || s.riskLevel == 'MEDIUM').length}',
+                      'Safe',
+                      AppColors.successGreen,
+                    ),
                   ],
                 ),
-              ).animate().fadeIn(delay: 600.ms).slideX(begin: 0.1),
+              ).animate().fadeIn(delay: 400.ms).slideY(begin: 0.1),
+
+              const SizedBox(height: 28),
+
+              // ── Recent Scans ────────────────────────────────────────────
+              Text(
+                'Recent Scans',
+                style: AppTextStyles.h4.copyWith(fontWeight: FontWeight.bold),
+              ).animate().fadeIn(delay: 500.ms),
+              const SizedBox(height: 12),
+              if (recentScans.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: AppColors.darkCard,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.photo_library_outlined,
+                        color: AppColors.textTertiary.withValues(alpha: 0.4),
+                        size: 36,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'No scans yet',
+                        style: AppTextStyles.bodySmall
+                            .copyWith(color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                ).animate().fadeIn(delay: 600.ms)
+              else
+                SizedBox(
+                  height: 100,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: recentScans.length,
+                    itemBuilder: (ctx, index) {
+                      final scan = recentScans[index];
+                      return _buildRecentScanCard(scan);
+                    },
+                  ),
+                ).animate().fadeIn(delay: 600.ms).slideX(begin: 0.1),
+
+              const SizedBox(height: 100),
             ],
           ),
         ),
@@ -510,29 +731,79 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen> {
     );
   }
 
-  Widget _buildRecentScanItem(IconData icon, Color statusColor) {
+  Widget _buildStatItem(
+    IconData icon,
+    String value,
+    String label,
+    Color color,
+  ) {
+    return Expanded(
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: AppTextStyles.h4.copyWith(
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatDivider() {
     return Container(
-      width: 80,
+      width: 1,
+      height: 40,
+      color: AppColors.border,
+    );
+  }
+
+  Widget _buildRecentScanCard(ScanHistoryEntry scan) {
+    final color = scan.riskLevel == 'HIGH'
+        ? AppColors.dangerRed
+        : scan.riskLevel == 'MEDIUM'
+            ? Colors.orange
+            : AppColors.successGreen;
+    final icon =
+        scan.type == ScanType.video ? Icons.video_file_rounded : Icons.image_rounded;
+
+    return Container(
+      width: 100,
       margin: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.darkCard,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
-      child: Stack(
-        alignment: Alignment.center,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: AppColors.textSecondary, size: 32),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-              ),
+          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 8),
+          Text(
+            '${scan.riskScore}%',
+            style: AppTextStyles.bodySmall.copyWith(
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          Text(
+            scan.riskLevel,
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textSecondary,
+              fontSize: 10,
             ),
           ),
         ],

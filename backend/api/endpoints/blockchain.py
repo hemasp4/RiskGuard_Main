@@ -276,8 +276,24 @@ async def verify_evidence(evidence_id: int):
 
     # On-chain verification
     try:
-        batch = await get_batch(evidence["batch_id"])
+        stored_bid = evidence["batch_id"]
+        batch = await get_batch(stored_bid)
         on_chain_root = batch["merkle_root"]
+
+        # Resilience: if on-chain root is all zeros, try adjacent batch_ids
+        # (guards against off-by-one from contract post-increment semantics)
+        zero_root = "0x" + "0" * 64
+        if on_chain_root == zero_root and stored_bid > 0:
+            for alt_bid in [stored_bid - 1, stored_bid + 1]:
+                try:
+                    alt_batch = await get_batch(alt_bid)
+                    if alt_batch["merkle_root"] != zero_root:
+                        batch = alt_batch
+                        on_chain_root = alt_batch["merkle_root"]
+                        logger.info(f"[VERIFY] batch_id fallback: {stored_bid} -> {alt_bid}")
+                        break
+                except Exception:
+                    pass
 
         # Normalize: strip "0x" prefix from both sides for comparison
         local_root = evidence["merkle_root"].removeprefix("0x")

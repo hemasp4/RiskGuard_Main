@@ -169,6 +169,7 @@ The voice detection engine uses a **6-signal hybrid CPU + GPU architecture** wit
 | **Pitch/F0** | 20% | Autocorrelation-based F0 contour naturalness — pitch variance, smoothness, jitter, shimmer | [Drugman & Alwan, 2011] |
 | **Statistical** | 10% | Higher-order amplitude moments — kurtosis, skewness deviation from natural speech distribution | [Sahidullah et al., 2015] |
 | **wav2vec2 GPU** | 40%* | wav2vec2-base ASVspoof2019 ONNX classifier served via Colab GPU | [Baevski et al., 2020] |
+| **File Upload** | - | Traditional audio upload path (MP3/WAV/M4A) for forensic analysis | New Component |
 
 *\*When Colab GPU is online, fusion weights are: 60% local CPU ensemble + 40% Colab GPU. When offline, 100% local CPU with zero accuracy degradation.*
 
@@ -442,6 +443,9 @@ Merkle batching reduces per-record cost by **83% (10 records)** to **99.7% (100 
 | Text Verification | Paste suspicious text → phishing + AI detection |
 | Video Analysis | Upload video → frame-by-frame + temporal analysis |
 | Blockchain Report | Report threats → SHA256 + IPFS + evidence filing |
+| Biometric Lock | Fingerprint/FaceID/PIN gate on app entry for forensic security |
+| Offline Whitelist | Professional brand-color letter avatars with 0% network dependency |
+| Analysis Lab | Unified tabs for Voice and Text analysis modules |
 | Dark/Light Theme | System-adaptive UI with glassmorphism design |
 | Scan History | Local history of all analyses with timestamps |
 
@@ -628,19 +632,36 @@ RiskGuard/
             ├── home/                  # Dashboard home
             ├── image_recognition/     # Image analysis screen
             ├── voice/                 # Voice analysis screen
-            ├── verification/          # Text verification screen
+            ├── text/                  # Text analysis screen (v3.1)
+            ├── verification/          # Phishing verification screen
             ├── blockchain/            # Blockchain report screen
             ├── history/               # Scan history
-            └── profile/               # User settings
+            └── profile/               # User settings + Backend config reorder
 ```
 
 ---
 
 **Total Codebase**: ~5,800 lines backend Python + ~3,200 lines Flutter Dart + ~1,200 lines HTML/CSS/JS dashboard
 
-**Authors**: RiskGuard Development Team
+---
 
-**License**: Research / Academic Use
+## 11. Recent Technical Refinements (Q1 2026)
+
+Following production-level audits, the system was refined to address platform-specific edge cases and enhance professional branding.
+
+### 11.1 Forensic Security: Biometric Entry Gate
+A **Biometric Security Layer** was integrated at the application entry point. Using `local_auth`, the app enforces a fingerprint, facial recognition, or device-PIN gate before any forensic evidence or scanning tools can be accessed. This ensures that only authorised device owners can view sensitive scan history or report threats.
+
+### 11.2 Hybrid Routing: LangChain Dart Router
+Implemented a **LangChain-inspired Decision Router** that determines whether to process requests locally or in the cloud based on:
+- File size thresholds (e.g., < 2MB for local processing)
+- Network conditions (latency vs. bandwidth)
+- Battery state (power-saving mode forces local analysis)
+
+### 11.3 UI/UX Professional Polish
+- **Offline Reliability**: Replaced external CDN icons with an internal **Brand Representation System**. Apps in the whitelist are now rendered using high-contrast, mathematically derived letter avatars with real brand hex-colors. This prevents UI flicker and ensures functionality in air-gapped or low-connectivity forensic environments.
+- **Cognitive Flow**: The user settings were reordered to place technical configurations (Backend URL) within the **SUPPORT** section. Additionally, the Voice Analysis Lab was refined by replacing the static "Identity" card with a functional **Library/Upload Card**, eliminating UI clutter and providing a faster forensic analysis path.
+- **Unified Labs**: Introduced the **Analysis Lab** tab system, consolidating Voice and Text analysis into a single cognitive workspace for investigators.
 
 ---
 

@@ -850,6 +850,12 @@ async def analyze_image(image: UploadFile = File(...)):
     
     try:
         result = await _analyze_image(raw)
+        # Feed into Intelligence Center
+        try:
+            from .intel import log_analysis
+            log_analysis("image", result)
+        except Exception:
+            pass
         return ImageAnalysisResponse(**result)
     except HTTPException:
         raise

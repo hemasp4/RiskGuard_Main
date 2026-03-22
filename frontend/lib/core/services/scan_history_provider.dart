@@ -1,5 +1,6 @@
 /// Scan history provider — stores scan results in Hive for persistence.
 /// Hive boxes map cleanly to DB tables for future migration.
+library;
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
