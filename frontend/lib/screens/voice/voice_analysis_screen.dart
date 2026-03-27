@@ -254,7 +254,12 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
 
       // Notify overlay for voice scan
       await NativeBridge.sendMessageToOverlay({
+        'sessionKind': 'media',
+        'sourcePackage': 'com.example.risk_guard',
+        'targetType': 'voice',
+        'targetLabel': 'Voice analysis',
         'status': 'Analyzing voice...',
+        'analysisSource': 'manual_scan',
         'isThreat': false,
         'threatText': 'Verifying waveform patterns...',
       });
@@ -268,13 +273,21 @@ class _VoiceAnalysisScreenState extends State<VoiceAnalysisScreen>
 
           // Success overlay update
           await NativeBridge.sendMessageToOverlay({
+            'sessionKind': 'media',
+            'sourcePackage': 'com.example.risk_guard',
+            'targetType': 'voice',
+            'targetLabel': 'Voice analysis',
             'status': 'Scan Complete',
+            'analysisSource': 'manual_scan',
             'isThreat': data.isLikelyAI,
             'threatText': data.isLikelyAI 
                 ? 'AI Voice Detected!' 
                 : 'Authentic Voice',
             'riskScore': data.syntheticProbability,
             'threatType': 'AI Voice',
+            'recommendation': data.isLikelyAI
+                ? 'Treat the voice sample as synthetic until it is verified through a trusted channel.'
+                : 'No strong synthetic voice indicators were found in this recording.',
           });
 
           setState(() {

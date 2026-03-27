@@ -785,15 +785,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
               },
             ),
             const Divider(color: AppColors.border, height: 32),
-              _buildSwitchRow(
-                'Real-time Protection',
-                Icons.shield_rounded,
-                context.read<RealtimeProtectionProvider>().isActive,
-                (v) async {
-                  final activated = await context
-                      .read<RealtimeProtectionProvider>()
-                      .setProtection(v);
-                  if (context.mounted) {
+            Consumer<RealtimeProtectionProvider>(
+              builder: (context, protection, child) {
+                return _buildSwitchRow(
+                  'Real-time Protection',
+                  Icons.shield_rounded,
+                  protection.isActive,
+                  (v) async {
+                    final activated = await context
+                        .read<RealtimeProtectionProvider>()
+                        .setProtection(v);
+                    if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
@@ -814,11 +816,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ),
                     );
-                  }
-                  if (!ctx.mounted) return;
-                  Navigator.pop(ctx);
-                },
-              ),
+                  },
+                );
+              },
+            ),
             const SizedBox(height: 16),
           ],
         ),

@@ -13,8 +13,9 @@ class RiskGuardAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "RiskGuardAccService"
-        private const val WINDOW_DEBOUNCE_DELAY = 1500L
-        private const val PACKAGE_SCAN_DEBOUNCE_MS = 900L
+        private const val WINDOW_DEBOUNCE_DELAY = 500L
+        private const val PACKAGE_SCAN_DEBOUNCE_MS = 350L
+        private const val MEDIA_CAPTURE_DEBOUNCE_MS = 1600L
         private const val MAX_SCAN_DEPTH = 10
         private const val MAX_NODES_PER_SCAN = 48
         private const val MAX_TEXT_LENGTH = 600
@@ -50,6 +51,7 @@ class RiskGuardAccessibilityService : AccessibilityService() {
     private var lastEventTime: Long = 0
     private val processedUrls = mutableSetOf<String>()
     private val lastPackageScanTimes = mutableMapOf<String, Long>()
+    private val lastMediaCaptureTimes = mutableMapOf<String, Long>()
     private var lastUrlCleanup = System.currentTimeMillis()
 
     override fun onServiceConnected() {
@@ -65,23 +67,30 @@ class RiskGuardAccessibilityService : AccessibilityService() {
             if (!ProtectionEventStore.isProtectionActive(applicationContext)) return
 
             val packageName = event.packageName?.toString() ?: return
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                handleWindowChanged(packageName)
+            }
+
             if (shouldIgnorePackage(packageName)) return
 
             val whitelistedPackages =
                 ProtectionEventStore.whitelistedPackages(applicationContext)
             if (
-                whitelistedPackages.isNotEmpty() &&
+                whitelistedPackages.isEmpty() ||
                 !whitelistedPackages.contains(packageName)
             ) {
                 return
             }
 
             when (event.eventType) {
-                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowChanged(packageName)
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
                 AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
                 AccessibilityEvent.TYPE_VIEW_FOCUSED
-                -> scanEventForUrls(event, packageName)
+                -> {
+                    scanEventForUrls(event, packageName)
+                    maybeRequestMediaCapture(packageName, event.eventType)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Accessibility scan failed", e)
@@ -96,6 +105,12 @@ class RiskGuardAccessibilityService : AccessibilityService() {
 
         lastPackageName = packageName
         lastEventTime = currentTime
+        updateOverlayVisibility(packageName)
+        maybeRequestMediaCapture(
+            packageName = packageName,
+            eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            bypassDebounce = true,
+        )
         Log.d(TAG, "Active package: $packageName")
     }
 
@@ -105,6 +120,21 @@ class RiskGuardAccessibilityService : AccessibilityService() {
             packageName.contains("launcher") ||
             packageName.contains("systemui") ||
             packageName.contains("inputmethod")
+    }
+
+    private fun updateOverlayVisibility(packageName: String) {
+        val whitelistedPackages =
+            ProtectionEventStore.whitelistedPackages(applicationContext)
+        val isVisible =
+            !shouldIgnorePackage(packageName) &&
+                whitelistedPackages.isNotEmpty() &&
+                whitelistedPackages.contains(packageName)
+
+        ProtectionEventStore.storeOverlayVisibility(
+            context = applicationContext,
+            isVisible = isVisible,
+            packageName = packageName,
+        )
     }
 
     private fun scanEventForUrls(event: AccessibilityEvent, packageName: String) {
@@ -157,7 +187,55 @@ class RiskGuardAccessibilityService : AccessibilityService() {
         if (now - lastUrlCleanup > CACHE_RETENTION_MS) {
             processedUrls.clear()
             lastPackageScanTimes.clear()
+            lastMediaCaptureTimes.clear()
             lastUrlCleanup = now
+        }
+    }
+
+    private fun maybeRequestMediaCapture(
+        packageName: String,
+        eventType: Int,
+        bypassDebounce: Boolean = false,
+    ) {
+        if (shouldIgnorePackage(packageName)) return
+        val whitelistedPackages = ProtectionEventStore.whitelistedPackages(applicationContext)
+        if (whitelistedPackages.isEmpty() || !whitelistedPackages.contains(packageName)) return
+
+        val shouldCapture = when (eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            -> true
+            else -> false
+        }
+        if (!shouldCapture) return
+
+        val now = System.currentTimeMillis()
+        val lastCapture = lastMediaCaptureTimes[packageName] ?: 0L
+        if (!bypassDebounce && now - lastCapture < MEDIA_CAPTURE_DEBOUNCE_MS) {
+            return
+        }
+        if (!ProtectionEventStore.isMediaProjectionRunning(applicationContext)) {
+            return
+        }
+        lastMediaCaptureTimes[packageName] = now
+
+        val intent = android.content.Intent(this, RiskGuardMediaProjectionService::class.java).apply {
+            action = RiskGuardMediaProjectionService.ACTION_CAPTURE_FRAME
+            putExtra(RiskGuardMediaProjectionService.EXTRA_SOURCE_PACKAGE, packageName)
+            putExtra(
+                RiskGuardMediaProjectionService.EXTRA_REASON,
+                if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                    "window_change"
+                } else {
+                    "content_change"
+                },
+            )
+        }
+
+        try {
+            startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Media capture request failed for $packageName", e)
         }
     }
 

@@ -2,6 +2,7 @@ package com.example.risk_guard
 
 import android.content.Context
 import android.content.Intent
+import org.json.JSONArray
 import org.json.JSONObject
 
 object ProtectionEventStore {
@@ -10,6 +11,8 @@ object ProtectionEventStore {
 
     private const val KEY_PROTECTION_ACTIVE = "protection_active"
     private const val KEY_WHITELISTED_PACKAGES = "whitelisted_packages"
+    private const val KEY_FOREGROUND_SERVICE_RUNNING = "foreground_service_running"
+    private const val KEY_MEDIA_PROJECTION_RUNNING = "media_projection_running"
 
     private const val KEY_URL = "flutter.latest_proactive_url"
     private const val KEY_URL_PACKAGE = "flutter.latest_proactive_pkg"
@@ -22,6 +25,14 @@ object ProtectionEventStore {
     private const val KEY_TRIGGER_OVERLAY = "flutter.trigger_overlay"
     private const val KEY_OVERLAY_PAYLOAD = "flutter.latest_overlay_payload"
     private const val KEY_OVERLAY_PAYLOAD_TIME = "flutter.latest_overlay_payload_time"
+    private const val KEY_EVENT_QUEUE = "flutter.protection_event_queue"
+    private const val MAX_PENDING_EVENTS = 24
+    private const val URL_DEDUPE_WINDOW_MS = 6000L
+    private const val URL_EVENT_TTL_MS = 8000L
+    private const val CALL_EVENT_TTL_MS = 30000L
+    private const val OVERLAY_EVENT_TTL_MS = 5000L
+    private const val MEDIA_EVENT_TTL_MS = 12000L
+    private const val MEDIA_DEDUPE_WINDOW_MS = 1500L
 
     const val ACTION_URL_DETECTED = "com.example.risk_guard.URL_DETECTED"
     const val ACTION_CALL_DETECTED = "com.example.risk_guard.CALL_DETECTED"
@@ -49,27 +60,92 @@ object ProtectionEventStore {
             ?: emptySet()
     }
 
+    fun setForegroundServiceRunning(context: Context, isRunning: Boolean) {
+        context.getSharedPreferences(NATIVE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_FOREGROUND_SERVICE_RUNNING, isRunning)
+            .apply()
+    }
+
+    fun isForegroundServiceRunning(context: Context): Boolean {
+        return context.getSharedPreferences(NATIVE_PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_FOREGROUND_SERVICE_RUNNING, false)
+    }
+
+    fun setMediaProjectionRunning(context: Context, isRunning: Boolean) {
+        context.getSharedPreferences(NATIVE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_MEDIA_PROJECTION_RUNNING, isRunning)
+            .apply()
+    }
+
+    fun isMediaProjectionRunning(context: Context): Boolean {
+        return context.getSharedPreferences(NATIVE_PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_MEDIA_PROJECTION_RUNNING, false)
+    }
+
     fun storeUrlEvent(context: Context, url: String, packageName: String) {
+        val now = System.currentTimeMillis()
         context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_URL, url)
             .putString(KEY_URL_PACKAGE, packageName)
-            .putLong(KEY_URL_TIME, System.currentTimeMillis())
+            .putLong(KEY_URL_TIME, now)
             .putString(KEY_TRIGGER_OVERLAY, "true")
             .apply()
+
+        enqueueEvent(
+            context = context,
+            event = JSONObject().apply {
+                put("id", "url-$now-${url.hashCode()}")
+                put("kind", "url_capture")
+                put("targetType", "url")
+                put("normalizedTarget", url)
+                put("sourcePackage", packageName)
+                put("createdAtMs", now)
+                put("expiresAtMs", now + URL_EVENT_TTL_MS)
+                put("priority", 50)
+                put("sessionId", "url-$now")
+                put("status", "pending")
+            },
+        )
     }
 
     fun storeCallEvent(context: Context, state: String, phoneNumber: String?) {
+        val now = System.currentTimeMillis()
         context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_CALL_STATE, state)
             .putString(KEY_CALL_NUMBER, phoneNumber)
-            .putLong(KEY_CALL_TIME, System.currentTimeMillis())
+            .putLong(KEY_CALL_TIME, now)
             .putString(KEY_TRIGGER_OVERLAY, "true")
             .apply()
+
+        enqueueEvent(
+            context = context,
+            event = JSONObject().apply {
+                put("id", "call-$now-$state")
+                put("kind", "call_state")
+                put("targetType", "phone_call")
+                put("normalizedTarget", state)
+                put("sourcePackage", "phone_service")
+                put("createdAtMs", now)
+                put("expiresAtMs", now + CALL_EVENT_TTL_MS)
+                put("priority", 100)
+                put("sessionId", "call-$now")
+                put("status", "pending")
+                put("callState", state)
+                if (phoneNumber != null) {
+                    put("phoneNumber", phoneNumber)
+                } else {
+                    put("phoneNumber", JSONObject.NULL)
+                }
+            },
+        )
     }
 
     fun storeOverlayPayload(context: Context, payload: Map<String, Any?>) {
+        val now = System.currentTimeMillis()
         val jsonObject = JSONObject()
         payload.forEach { (key, value) ->
             jsonObject.put(key, value ?: JSONObject.NULL)
@@ -78,9 +154,98 @@ object ProtectionEventStore {
         context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_OVERLAY_PAYLOAD, jsonPayload)
-            .putLong(KEY_OVERLAY_PAYLOAD_TIME, System.currentTimeMillis())
+            .putLong(KEY_OVERLAY_PAYLOAD_TIME, now)
             .putString(KEY_TRIGGER_OVERLAY, "true")
             .apply()
+
+        enqueueEvent(
+            context = context,
+            event = JSONObject().apply {
+                put("id", "overlay-$now-${payload.hashCode()}")
+                put("kind", "overlay_status")
+                put("targetType", payload["targetType"] ?: "overlay")
+                put("normalizedTarget", payload["url"] ?: payload["status"] ?: "overlay")
+                put("sourcePackage", payload["source"] ?: payload["sourcePackage"] ?: JSONObject.NULL)
+                put("createdAtMs", now)
+                put("expiresAtMs", now + OVERLAY_EVENT_TTL_MS)
+                put("priority", if (payload["isCallActive"] == true) 90 else 20)
+                put("sessionId", "overlay-$now")
+                put("status", payload["status"] ?: "pending")
+                put("payload", jsonObject)
+            },
+        )
+    }
+
+    fun storeMediaCaptureEvent(
+        context: Context,
+        filePath: String,
+        sourcePackage: String,
+        targetType: String = "screen_frame",
+        reason: String = "capture",
+    ) {
+        val now = System.currentTimeMillis()
+        val payload = JSONObject().apply {
+            put("sessionKind", "media")
+            put("sourcePackage", sourcePackage)
+            put("targetType", targetType)
+            put("targetLabel", "Live screen frame")
+            put("status", "CAPTURED FRAME")
+            put("analysisSource", "screen_capture")
+            put("summary", "Captured the current visible screen for live media verification.")
+            put("recommendation", "Hold the current app steady while RiskGuard verifies the media.")
+            put("localFramePath", filePath)
+            put("captureReason", reason)
+        }
+
+        enqueueEvent(
+            context = context,
+            event = JSONObject().apply {
+                put("id", "media-$now-${sourcePackage.hashCode()}")
+                put("kind", "media_result")
+                put("targetType", targetType)
+                put("normalizedTarget", "$sourcePackage:$targetType")
+                put("sourcePackage", sourcePackage)
+                put("createdAtMs", now)
+                put("expiresAtMs", now + MEDIA_EVENT_TTL_MS)
+                put("priority", 40)
+                put("sessionId", "media-$now")
+                put("status", "captured")
+                put("payload", payload)
+            },
+        )
+    }
+
+    fun storeOverlayVisibility(
+        context: Context,
+        isVisible: Boolean,
+        packageName: String?,
+        reason: String = "window_context",
+    ) {
+        val now = System.currentTimeMillis()
+        enqueueEvent(
+            context = context,
+            event = JSONObject().apply {
+                put("id", "visibility-$now-${packageName ?: "none"}")
+                put("kind", "overlay_status")
+                put("targetType", "visibility")
+                put("normalizedTarget", if (isVisible) "visible" else "hidden")
+                put("sourcePackage", packageName ?: JSONObject.NULL)
+                put("createdAtMs", now)
+                put("expiresAtMs", now + OVERLAY_EVENT_TTL_MS)
+                put("priority", 10)
+                put("sessionId", "visibility-$now")
+                put("status", if (isVisible) "visible" else "hidden")
+                put(
+                    "payload",
+                    JSONObject().apply {
+                        put("type", "visibility")
+                        put("visible", isVisible)
+                        put("packageName", packageName ?: JSONObject.NULL)
+                        put("reason", reason)
+                    },
+                )
+            },
+        )
     }
 
     fun broadcastUrl(context: Context, url: String, packageName: String) {
@@ -116,6 +281,86 @@ object ProtectionEventStore {
             .remove(KEY_TRIGGER_OVERLAY)
             .remove(KEY_OVERLAY_PAYLOAD)
             .remove(KEY_OVERLAY_PAYLOAD_TIME)
+            .remove(KEY_EVENT_QUEUE)
             .apply()
+    }
+
+    private fun enqueueEvent(context: Context, event: JSONObject) {
+        val prefs = context.getSharedPreferences(FLUTTER_PREFS, Context.MODE_PRIVATE)
+        val queue = readQueue(prefs)
+        val now = System.currentTimeMillis()
+
+        pruneQueue(queue, now)
+        if (shouldSkipDuplicate(queue, event, now)) {
+            persistQueue(prefs, queue)
+            return
+        }
+
+        queue.add(event)
+        while (queue.size > MAX_PENDING_EVENTS) {
+            queue.removeAt(0)
+        }
+        persistQueue(prefs, queue)
+    }
+
+    private fun shouldSkipDuplicate(
+        queue: MutableList<JSONObject>,
+        event: JSONObject,
+        now: Long,
+    ): Boolean {
+        val kind = event.optString("kind")
+        val target = event.optString("normalizedTarget")
+        val source = event.optString("sourcePackage")
+        val createdAt = event.optLong("createdAtMs", now)
+
+        return when (kind) {
+            "url_capture" -> queue.any { existing ->
+                existing.optString("kind") == kind &&
+                    existing.optString("normalizedTarget") == target &&
+                    existing.optString("sourcePackage") == source &&
+                    createdAt - existing.optLong("createdAtMs", 0L) < URL_DEDUPE_WINDOW_MS
+            }
+            "overlay_status" -> queue.any { existing ->
+                existing.optString("kind") == kind &&
+                    existing.optString("normalizedTarget") == target &&
+                    existing.optString("sourcePackage") == source &&
+                    createdAt - existing.optLong("createdAtMs", 0L) < 1000L
+            }
+            "media_result" -> queue.any { existing ->
+                existing.optString("kind") == kind &&
+                    existing.optString("normalizedTarget") == target &&
+                    existing.optString("sourcePackage") == source &&
+                    createdAt - existing.optLong("createdAtMs", 0L) < MEDIA_DEDUPE_WINDOW_MS
+            }
+            else -> false
+        }
+    }
+
+    private fun pruneQueue(queue: MutableList<JSONObject>, now: Long) {
+        queue.removeAll { event ->
+            val expiresAt = event.optLong("expiresAtMs", 0L)
+            expiresAt > 0L && now > expiresAt
+        }
+    }
+
+    private fun readQueue(
+        prefs: android.content.SharedPreferences,
+    ): MutableList<JSONObject> {
+        val raw = prefs.getString(KEY_EVENT_QUEUE, null) ?: return mutableListOf()
+        return try {
+            val array = JSONArray(raw)
+            MutableList(array.length()) { index -> array.getJSONObject(index) }
+        } catch (_: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun persistQueue(
+        prefs: android.content.SharedPreferences,
+        queue: List<JSONObject>,
+    ) {
+        val array = JSONArray()
+        queue.forEach { array.put(it) }
+        prefs.edit().putString(KEY_EVENT_QUEUE, array.toString()).apply()
     }
 }

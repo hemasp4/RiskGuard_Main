@@ -1,882 +1,972 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:risk_guard/core/models/analysis_models.dart';
 import 'package:risk_guard/core/services/api_service.dart';
+import 'package:risk_guard/core/services/native_bridge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum _OverlaySurface {
-  bubble,
-  card,
-  call,
-}
+enum _OverlaySurface { hidden, bubble, card, call }
+enum _SessionKind { none, url, media, call }
+enum _SessionState { dismissed, captured, verifying, ready, degraded }
 
 class _CachedUrlVerdict {
-  const _CachedUrlVerdict({
-    required this.verdict,
-    required this.cachedAt,
-  });
-
+  const _CachedUrlVerdict(this.verdict, this.cachedAt);
   final UrlVerificationResult verdict;
   final DateTime cachedAt;
-
   bool get isFresh =>
       DateTime.now().difference(cachedAt) < const Duration(minutes: 2);
 }
 
+class _Session {
+  const _Session({
+    required this.id,
+    required this.kind,
+    required this.state,
+    required this.sourcePackage,
+    required this.targetType,
+    required this.target,
+    required this.status,
+    required this.summary,
+    required this.recommendation,
+    required this.intelSource,
+    required this.threatType,
+    required this.phoneNumber,
+    required this.riskScore,
+    required this.isThreat,
+    required this.previewPath,
+  });
+
+  const _Session.idle()
+      : id = '',
+        kind = _SessionKind.none,
+        state = _SessionState.dismissed,
+        sourcePackage = '',
+        targetType = 'URL',
+        target = 'Awaiting live capture',
+        status = 'MONITORING ACTIVE',
+        summary = 'RiskGuard is ready to monitor whitelisted apps.',
+        recommendation = 'RiskGuard will surface live verdicts here.',
+        intelSource = 'LOCAL SHIELD',
+        threatType = 'Shield Ready',
+        phoneNumber = 'Hidden Number',
+        riskScore = 0,
+        isThreat = false,
+        previewPath = null;
+
+  final String id;
+  final _SessionKind kind;
+  final _SessionState state;
+  final String sourcePackage;
+  final String targetType;
+  final String target;
+  final String status;
+  final String summary;
+  final String recommendation;
+  final String intelSource;
+  final String threatType;
+  final String phoneNumber;
+  final double riskScore;
+  final bool isThreat;
+  final String? previewPath;
+
+  _Session copyWith({
+    String? id,
+    _SessionKind? kind,
+    _SessionState? state,
+    String? sourcePackage,
+    String? targetType,
+    String? target,
+    String? status,
+    String? summary,
+    String? recommendation,
+    String? intelSource,
+    String? threatType,
+    String? phoneNumber,
+    double? riskScore,
+    bool? isThreat,
+    String? previewPath,
+  }) => _Session(
+    id: id ?? this.id,
+    kind: kind ?? this.kind,
+    state: state ?? this.state,
+    sourcePackage: sourcePackage ?? this.sourcePackage,
+    targetType: targetType ?? this.targetType,
+    target: target ?? this.target,
+    status: status ?? this.status,
+    summary: summary ?? this.summary,
+    recommendation: recommendation ?? this.recommendation,
+    intelSource: intelSource ?? this.intelSource,
+    threatType: threatType ?? this.threatType,
+    phoneNumber: phoneNumber ?? this.phoneNumber,
+    riskScore: riskScore ?? this.riskScore,
+    isThreat: isThreat ?? this.isThreat,
+    previewPath: previewPath ?? this.previewPath,
+  );
+}
+
 class RiskGuardOverlay extends StatefulWidget {
   const RiskGuardOverlay({super.key});
-
   @override
   State<RiskGuardOverlay> createState() => _RiskGuardOverlayState();
 }
 
 class _RiskGuardOverlayState extends State<RiskGuardOverlay> {
-  static const _channel = MethodChannel('com.example.risk_guard/overlay');
-  static const Duration _pollingInterval = Duration(milliseconds: 900);
-  static const int _bubbleSize = 84;
-  static const int _cardWidth = 360;
-  static const int _cardHeight = 300;
-
-  Timer? _pollingTimer;
+  static const MethodChannel _channel = MethodChannel('com.example.risk_guard/overlay');
+  static const double _bubbleSize = 84;
+  static const double _cardWidth = 368;
+  static const double _cardHeight = 328;
+  static const double _callBottomSheetHeight = 432;
+  final Map<String, _CachedUrlVerdict> _urlVerdicts = <String, _CachedUrlVerdict>{};
+  final Set<String> _processedEventIds = <String>{};
   SharedPreferences? _prefs;
-  final Map<String, _CachedUrlVerdict> _urlVerdicts =
-      <String, _CachedUrlVerdict>{};
+  Timer? _pollTimer;
+  Timer? _dismissTimer;
+  Timer? _visibilityHideTimer;
+  _OverlaySurface _surface = _OverlaySurface.hidden;
+  _Session _session = const _Session.idle();
+  String? _foregroundPackage;
+  bool _foregroundWhitelisted = false;
+  String? _collapsedSessionId;
+  OverlayPosition? _bubblePosition;
+  OverlayPosition? _dragPosition;
+  Size _viewportSize = const Size(392, 820);
+  DateTime _surfacePinnedUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
-  int _lastProcessedUrlTime = 0;
-  int _lastProcessedCallTime = 0;
-  int _lastProcessedPayloadTime = 0;
-
-  String _status = 'MONITORING ACTIVE';
-  String _threatText = 'RiskGuard is ready to monitor live content.';
-  String _lastThreatType = 'Shield Ready';
-  String _phoneNumber = 'Hidden Number';
-  String _callMessage = 'Listening for suspicious voice patterns.';
-  String _sourceApp = 'Protected Apps';
-  String _scannedUrl = 'Awaiting live capture';
-  String _recommendation =
-      'Open a link or start a call to begin realtime analysis.';
-  String _intelSource = 'LOCAL SHIELD';
-  double _riskScore = 0.0;
-  bool _isThreat = false;
-  bool _isCallActive = false;
-  bool _isMinimized = true;
-  bool _isAnalyzing = false;
-  _OverlaySurface _surface = _OverlaySurface.bubble;
+  bool get _isAnalyzing => _session.state == _SessionState.captured || _session.state == _SessionState.verifying;
+  bool get _bubbleAllowed => _session.kind == _SessionKind.call || _foregroundWhitelisted;
+  bool get _cardEligible =>
+      (_session.kind == _SessionKind.url || _session.kind == _SessionKind.media) &&
+      _foregroundWhitelisted &&
+      _session.sourcePackage == _foregroundPackage &&
+      _session.id.isNotEmpty;
+  bool get _cardAllowed => _cardEligible && _session.id != _collapsedSessionId;
+  bool get _canExpandFromBubble =>
+      _session.kind == _SessionKind.call || _cardEligible || (_session.kind == _SessionKind.none && _foregroundWhitelisted);
+  bool get _isSurfacePinned => DateTime.now().isBefore(_surfacePinnedUntil);
 
   @override
   void initState() {
     super.initState();
-    _initializeOverlay();
+    _boot();
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'onMessageReceived') {
-        _applyOverlayPayload(Map<String, dynamic>.from(call.arguments));
+      if (call.method == 'onMessageReceived' && call.arguments is Map) {
+        _applyPayload(Map<String, dynamic>.from(call.arguments as Map));
       }
     });
   }
 
-  Future<void> _initializeOverlay() async {
+  Future<void> _boot() async {
     _prefs = await SharedPreferences.getInstance();
-    _startPolling();
+    await _setSurface(_OverlaySurface.hidden);
+    _schedulePoll();
   }
 
-  void _startPolling() {
-    _pollingTimer?.cancel();
-    _pollingTimer = Timer.periodic(_pollingInterval, (_) async {
-      try {
-        final prefs = _prefs;
-        if (prefs == null) return;
-
-        await prefs.reload();
-
-        if (prefs.getString('trigger_overlay') == 'true') {
-          await prefs.setString('trigger_overlay', 'false');
-        }
-
-        final urlTime = _readNativeTimestamp(prefs.get('latest_proactive_time'));
-        if (urlTime > _lastProcessedUrlTime) {
-          _lastProcessedUrlTime = urlTime;
-          final url = _normalizeUrl(prefs.getString('latest_proactive_url'));
-          if (url != null) {
-            await _handleProactiveUrl(
-              url,
-              prefs.getString('latest_proactive_pkg'),
-            );
-          }
-        }
-
-        final callTime = _readNativeTimestamp(prefs.get('latest_call_time'));
-        if (callTime > _lastProcessedCallTime) {
-          _lastProcessedCallTime = callTime;
-          final state = prefs.getString('latest_call_state');
-          if (state != null) {
-            await _handleCallState(state, prefs.getString('latest_call_number'));
-          }
-        }
-
-        final payloadTime = _readNativeTimestamp(
-          prefs.get('latest_overlay_payload_time'),
-        );
-        if (payloadTime > _lastProcessedPayloadTime) {
-          _lastProcessedPayloadTime = payloadTime;
-          final rawPayload = prefs.getString('latest_overlay_payload');
-          if (rawPayload != null && rawPayload.isNotEmpty) {
-            final decoded = jsonDecode(rawPayload);
-            if (decoded is Map<String, dynamic>) {
-              _applyOverlayPayload(decoded);
-            } else if (decoded is Map) {
-              _applyOverlayPayload(Map<String, dynamic>.from(decoded));
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('Overlay polling error: $e');
-      }
+  void _schedulePoll() {
+    _pollTimer?.cancel();
+    final delay = _surface == _OverlaySurface.hidden && !_isAnalyzing && _session.kind != _SessionKind.call
+        ? const Duration(milliseconds: 1300)
+        : const Duration(milliseconds: 180);
+    _pollTimer = Timer(delay, () async {
+      await _pollQueue();
+      if (mounted) _schedulePoll();
     });
   }
 
-  int _readNativeTimestamp(Object? rawValue) {
-    if (rawValue is int) return rawValue;
-    if (rawValue is double) return rawValue.toInt();
-    return 0;
+  Future<void> _pollQueue() async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    await prefs.reload();
+    final raw = prefs.getString('protection_event_queue');
+    if (raw == null || raw.isEmpty) return;
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return;
+    final events = decoded.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+      ..sort((a, b) => _readInt(a['createdAtMs']).compareTo(_readInt(b['createdAtMs'])));
+    for (final event in events) {
+      final id = event['id']?.toString();
+      if (id == null || _processedEventIds.contains(id)) continue;
+      if (_readInt(event['expiresAtMs']) > 0 &&
+          DateTime.now().millisecondsSinceEpoch > _readInt(event['expiresAtMs'])) {
+        _remember(id);
+        continue;
+      }
+      switch (event['kind']) {
+        case 'url_capture':
+          await _handleUrlEvent(event);
+          break;
+        case 'media_result':
+          await _handleMediaEvent(event);
+          break;
+        case 'call_state':
+          await _handleCallEvent(event);
+          break;
+        case 'overlay_status':
+          _handleOverlayStatus(event);
+          break;
+      }
+      _remember(id);
+    }
   }
 
-  double _readRiskScore(Object? rawValue) {
-    if (rawValue is num) {
-      final normalized = rawValue > 1
-          ? rawValue.toDouble() / 100
-          : rawValue.toDouble();
-      return normalized.clamp(0.0, 1.0).toDouble();
-    }
-    return _riskScore;
+  int _readInt(Object? value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+
+  void _remember(String id) {
+    _processedEventIds.add(id);
+    if (_processedEventIds.length > 120) _processedEventIds.remove(_processedEventIds.first);
   }
 
-  String? _normalizeUrl(String? rawUrl) {
-    if (rawUrl == null || rawUrl.trim().isEmpty) return null;
-    final trimmed =
-        rawUrl.trim().replaceAll(RegExp(r'[\]\)\}\>,;:.]+$'), '');
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      return trimmed;
-    }
-    return 'https://$trimmed';
+  void _pinSurface([Duration duration = const Duration(milliseconds: 850)]) {
+    _surfacePinnedUntil = DateTime.now().add(duration);
   }
 
-  String _prettyPackageName(String? packageName) {
-    if (packageName == null || packageName.isEmpty) {
-      return 'Protected App';
-    }
+  void _cleanupPreview(String? path) {
+    if (path == null || path.isEmpty) return;
+    final file = File(path);
+    if (!file.existsSync()) return;
+    unawaited(file.delete());
+  }
 
-    const knownNames = <String, String>{
+  String _appName(String? packageName) {
+    const known = <String, String>{
       'com.android.chrome': 'Chrome',
       'com.whatsapp': 'WhatsApp',
       'org.telegram.messenger': 'Telegram',
       'com.instagram.android': 'Instagram',
       'com.facebook.katana': 'Facebook',
-      'com.google.android.dialer': 'Phone',
+      'phone_service': 'Phone Service',
     };
-
-    if (knownNames.containsKey(packageName)) {
-      return knownNames[packageName]!;
-    }
-
-    final leaf = packageName.split('.').last.replaceAll('_', ' ');
-    if (leaf.isEmpty) return packageName;
-    return leaf[0].toUpperCase() + leaf.substring(1);
+    if (packageName == null || packageName.isEmpty) return 'Protected App';
+    return known[packageName] ?? packageName.split('.').last.replaceAll('_', ' ');
   }
 
-  String _formatUrl(String url) {
-    if (url.length <= 54) return url;
-    return '${url.substring(0, 28)}...${url.substring(url.length - 20)}';
-  }
-
-  bool _isDangerStatus(String status) {
-    final normalized = status.toUpperCase();
-    return normalized.contains('DANGER') ||
-        normalized.contains('MALICIOUS') ||
-        normalized.contains('RISK') ||
-        normalized.contains('BLOCK');
-  }
-
-  void _cleanupVerdictCache() {
-    _urlVerdicts.removeWhere((_, cached) => !cached.isFresh);
-  }
-
-  Future<void> _handleProactiveUrl(String url, String? packageName) async {
-    _cleanupVerdictCache();
-
-    if (mounted) {
-      setState(() {
-        _sourceApp = _prettyPackageName(packageName);
-        _scannedUrl = url;
-        _status = 'CAPTURED LINK';
-        _threatText =
-            'Preparing a live verdict for the captured destination.';
-        _recommendation = 'Normalizing the link before threat verification.';
-        _intelSource = 'LOCAL SHIELD';
-        _lastThreatType = 'Link Scan';
-        _riskScore = 0.08;
-        _isThreat = false;
-        _isCallActive = false;
-        _isMinimized = false;
-        _isAnalyzing = true;
-      });
-    }
-    await _setSurface(_OverlaySurface.card);
-
-    final cached = _urlVerdicts[url];
+  Future<void> _handleUrlEvent(Map<String, dynamic> event) async {
+    final id = event['id']?.toString();
+    final target = event['normalizedTarget']?.toString();
+    final pkg = event['sourcePackage']?.toString() ?? '';
+    if (id == null || target == null || target.isEmpty) return;
+    _dismissTimer?.cancel();
+    _collapsedSessionId = null;
+    _setSession(_Session(
+      id: id,
+      kind: _SessionKind.url,
+      state: _SessionState.captured,
+      sourcePackage: pkg,
+      targetType: 'URL',
+      target: target,
+      status: 'CAPTURED LINK',
+      summary: 'Target captured from the active monitored app. Starting verification.',
+      recommendation: 'Preparing normalization and offline precheck.',
+      intelSource: 'LOCAL PRECHECK',
+      threatType: 'URL',
+      phoneNumber: _session.phoneNumber,
+      riskScore: 0.08,
+      isThreat: false,
+      previewPath: null,
+    ));
+    await _syncSurface();
+    final cached = _urlVerdicts[target];
     if (cached != null && cached.isFresh) {
-      _applyUrlVerdict(
-        cached.verdict,
-        packageName: packageName,
-        fromCache: true,
-      );
+      if (_session.id == id) _applyVerdict(cached.verdict, pkg, true);
+      return;
+    }
+    _setSession(_session.copyWith(
+      state: _SessionState.verifying,
+      status: 'CLOUD VERIFYING',
+      summary: 'Comparing the target against live threat intelligence and local checks.',
+      recommendation: 'Waiting for a final verdict.',
+      intelSource: 'THREAT INTEL',
+      riskScore: 0.16,
+    ));
+    await _syncSurface();
+    try {
+      final result = await ApiService().verifyUrl(target);
+      if (!mounted || _session.id != id) return;
+      if (!result.isSuccess || result.data == null) {
+        _setSession(_session.copyWith(
+          state: _SessionState.degraded,
+          status: 'DEGRADED OFFLINE',
+          summary: 'Live capture succeeded, but the backend verdict was unavailable.',
+          recommendation: 'Treat this target with caution until connectivity is restored.',
+          intelSource: 'OFFLINE FALLBACK',
+          threatType: 'Pending',
+          riskScore: 0.2,
+        ));
+        await _syncSurface();
+        _scheduleDismiss(id);
+        return;
+      }
+      _urlVerdicts[target] = _CachedUrlVerdict(result.data!, DateTime.now());
+      _applyVerdict(result.data!, pkg, false);
+    } catch (_) {
+      if (!mounted || _session.id != id) return;
+      _setSession(_session.copyWith(
+        state: _SessionState.degraded,
+        status: 'SCAN ERROR',
+        summary: 'Realtime verification failed before a final verdict.',
+        recommendation: 'Keep the target unopened until verification recovers.',
+        intelSource: 'ERROR',
+        threatType: 'Retry Needed',
+        riskScore: 0.18,
+      ));
+      await _syncSurface();
+      _scheduleDismiss(id);
+    }
+  }
+
+  void _applyVerdict(UrlVerificationResult verdict, String pkg, bool fromCache) {
+    final danger = verdict.status.toUpperCase().contains('DANGER') || verdict.status.toUpperCase().contains('MALICIOUS');
+    final next = _session.copyWith(
+      state: _SessionState.ready,
+      status: 'VERDICT READY',
+      sourcePackage: pkg,
+      target: verdict.url.isNotEmpty ? verdict.url : _session.target,
+      summary: danger ? 'Threat indicators were found for this destination.' : 'No known malicious indicators were found for this destination.',
+      recommendation: verdict.recommendation,
+      intelSource: verdict.intelligenceSource.isNotEmpty ? verdict.intelligenceSource.toUpperCase() : (fromCache ? 'LOCAL CACHE' : 'THREAT INTEL'),
+      threatType: verdict.threatType.isNotEmpty ? verdict.threatType : 'URL',
+      riskScore: (verdict.riskScore / 100).clamp(0.0, 1.0).toDouble(),
+      isThreat: danger,
+    );
+    _setSession(next);
+    unawaited(_syncSurface());
+    _scheduleDismiss(next.id);
+  }
+
+  Future<void> _handleMediaEvent(Map<String, dynamic> event) async {
+    if (_session.kind == _SessionKind.call) return;
+    final payload = event['payload'];
+    if (payload is Map) {
+      final mediaPayload = Map<String, dynamic>.from(payload);
+      if (mediaPayload['localFramePath'] != null) {
+        await _handleCapturedFramePayload(
+          mediaPayload,
+          fallbackSessionId: event['sessionId']?.toString() ?? event['id']?.toString(),
+        );
+        return;
+      }
+      _applyPayload(mediaPayload);
+    }
+  }
+
+  Future<void> _handleCapturedFramePayload(
+    Map<String, dynamic> payload, {
+    String? fallbackSessionId,
+  }) async {
+    final String framePath = payload['localFramePath']?.toString() ?? '';
+    final String sessionId =
+        payload['sessionId']?.toString() ??
+        payload['requestId']?.toString() ??
+        fallbackSessionId ??
+        'media-${DateTime.now().millisecondsSinceEpoch}';
+    final String sourcePackage =
+        payload['sourcePackage']?.toString() ??
+        payload['source']?.toString() ??
+        _foregroundPackage ??
+        _session.sourcePackage;
+
+    if (_session.kind == _SessionKind.url &&
+        _session.sourcePackage == sourcePackage &&
+        _session.id.isNotEmpty) {
       return;
     }
 
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    if (!mounted) return;
+    if (_session.kind == _SessionKind.media &&
+        _isAnalyzing &&
+        _session.sourcePackage == sourcePackage) {
+      return;
+    }
 
-    setState(() {
-      _status = 'VERIFYING URL';
-      _threatText =
-          'Checking live phishing, malware, and reputation signals.';
-      _recommendation =
-          'Hold while the backend returns the final classification.';
-      _intelSource = 'BACKEND PENDING';
-      _riskScore = 0.16;
-    });
+    if (sourcePackage.isNotEmpty &&
+        _foregroundPackage != null &&
+        sourcePackage != _foregroundPackage) {
+      return;
+    }
+
+    final File frameFile = File(framePath);
+    if (framePath.isEmpty) {
+      return;
+    }
+    _dismissTimer?.cancel();
+    _collapsedSessionId = null;
+    _pinSurface(const Duration(milliseconds: 1200));
+    _setSession(
+      _Session(
+        id: sessionId,
+        kind: _SessionKind.media,
+        state: _SessionState.captured,
+        sourcePackage: sourcePackage,
+        targetType: 'SCREEN FRAME',
+        target: payload['targetLabel']?.toString() ?? 'Live screen media',
+        status: 'CAPTURED FRAME',
+        summary:
+            'Captured the current visible screen from the monitored app. Starting deepfake verification.',
+        recommendation:
+            'Keep the current screen visible while RiskGuard completes the first-pass media verdict.',
+        intelSource: 'SCREEN CAPTURE',
+        threatType: 'Screen Media',
+        phoneNumber: _session.phoneNumber,
+        riskScore: 0.12,
+        isThreat: false,
+        previewPath: framePath,
+      ),
+    );
+    await _syncSurface();
+
+    if (!await frameFile.exists()) {
+      _setSession(
+        _session.copyWith(
+          state: _SessionState.degraded,
+          status: 'CAPTURE ERROR',
+          summary: 'The captured frame was no longer available for analysis.',
+          recommendation:
+              'Keep the source visible and wait for the next capture cycle.',
+          intelSource: 'SCREEN CAPTURE',
+          riskScore: 0.15,
+        ),
+      );
+      await _syncSurface();
+      _scheduleDismiss(sessionId);
+      return;
+    }
 
     try {
-      final result = await ApiService().verifyUrl(url);
-      if (!mounted) return;
+      final bytes = await frameFile.readAsBytes();
+      if (!mounted || _session.id != sessionId) return;
+
+      _setSession(
+        _session.copyWith(
+          state: _SessionState.verifying,
+          status: 'ANALYZING FRAME',
+          summary:
+              'Running image-based deepfake analysis on the current screen frame.',
+          recommendation: 'Waiting for a final screen-media verdict.',
+          intelSource: 'LIVE MEDIA',
+          riskScore: 0.18,
+        ),
+      );
+      await _syncSurface();
+
+      final result = await ApiService().analyzeImage(
+        bytes,
+        filename: frameFile.uri.pathSegments.isNotEmpty
+            ? frameFile.uri.pathSegments.last
+            : 'screen_frame.jpg',
+      );
+      if (!mounted || _session.id != sessionId) return;
 
       if (!result.isSuccess || result.data == null) {
-        setState(() {
-          _status = 'BACKEND UNAVAILABLE';
-          _threatText =
-              'Live capture succeeded, but the verdict service did not respond.';
-          _recommendation =
-              'Check backend connectivity. The link was captured, but no final verdict is available yet.';
-          _intelSource = 'OFFLINE FALLBACK';
-          _lastThreatType = 'Pending';
-          _riskScore = 0.0;
-          _isThreat = false;
-          _isAnalyzing = false;
-        });
+        _setSession(
+          _session.copyWith(
+            state: _SessionState.degraded,
+            status: 'MEDIA BACKEND UNAVAILABLE',
+            summary:
+                'Screen capture succeeded, but the backend did not return a media verdict.',
+            recommendation:
+                'RiskGuard will continue capturing new frames while connectivity recovers.',
+            intelSource: 'OFFLINE / DEGRADED',
+            threatType: 'Screen Media',
+            riskScore: 0.2,
+          ),
+        );
+        await _syncSurface();
+        _scheduleDismiss(sessionId);
         return;
       }
 
-      _urlVerdicts[url] = _CachedUrlVerdict(
-        verdict: result.data!,
-        cachedAt: DateTime.now(),
+      final analysis = result.data!;
+      final probability = analysis.aiGeneratedProbability > 1
+          ? analysis.aiGeneratedProbability / 100
+          : analysis.aiGeneratedProbability;
+      final isThreat = analysis.isAiGenerated || probability >= 0.65;
+
+      _setSession(
+        _session.copyWith(
+          state: _SessionState.ready,
+          status: 'FRAME VERDICT READY',
+          summary: analysis.explanation.isNotEmpty
+              ? analysis.explanation
+              : (isThreat
+                    ? 'Potential deepfake indicators were found in the visible media.'
+                    : 'No strong deepfake indicators were found in the visible media.'),
+          recommendation: isThreat
+              ? 'Treat this media as untrusted until you verify the source.'
+              : 'No immediate deepfake risk was detected from this captured frame.',
+          intelSource: analysis.analysisMethod.toUpperCase(),
+          threatType: analysis.modelUsed.isNotEmpty
+              ? analysis.modelUsed
+              : 'Screen Media',
+          riskScore: probability.clamp(0.0, 1.0),
+          isThreat: isThreat,
+        ),
       );
-      _applyUrlVerdict(result.data!, packageName: packageName);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _status = 'SCAN ERROR';
-        _threatText =
-            'Realtime verification failed before the final verdict was returned.';
-        _recommendation =
-            'Keep the link unopened until backend connectivity is restored.';
-        _intelSource = 'ERROR';
-        _lastThreatType = 'Retry Needed';
-        _riskScore = 0.0;
-        _isThreat = false;
-        _isAnalyzing = false;
-      });
-      debugPrint('Overlay URL verification failed: $e');
+      await _syncSurface();
+      _scheduleDismiss(sessionId);
+    } catch (_) {
+      if (!mounted || _session.id != sessionId) return;
+      _setSession(
+        _session.copyWith(
+          state: _SessionState.degraded,
+          status: 'FRAME ANALYSIS ERROR',
+          summary: 'Captured media could not be analyzed successfully.',
+          recommendation:
+              'RiskGuard will wait for the next valid frame capture from this app.',
+          intelSource: 'ERROR',
+          riskScore: 0.18,
+        ),
+      );
+      await _syncSurface();
+      _scheduleDismiss(sessionId);
     }
   }
 
-  void _applyUrlVerdict(
-    UrlVerificationResult verdict, {
-    String? packageName,
-    bool fromCache = false,
-  }) {
-    final isDanger = _isDangerStatus(verdict.status);
-    final normalizedScore =
-        (verdict.riskScore / 100).clamp(0.0, 1.0).toDouble();
-
-    if (!mounted) return;
-    setState(() {
-      _sourceApp = _prettyPackageName(packageName) == 'Protected App'
-          ? _sourceApp
-          : _prettyPackageName(packageName);
-      _scannedUrl = verdict.url.isNotEmpty ? verdict.url : _scannedUrl;
-      _status = isDanger
-          ? 'DANGER DETECTED'
-          : (fromCache ? 'RECENT RESULT' : 'LINK VERIFIED');
-      _threatText = isDanger
-          ? 'Threat indicators were detected for this destination.'
-          : 'No known malicious indicators were found for this destination.';
-      _recommendation = verdict.recommendation.isNotEmpty
-          ? verdict.recommendation
-          : (isDanger
-              ? 'Do not open this link until the threat is reviewed.'
-              : 'You can proceed, but keep normal caution.');
-      _intelSource = verdict.intelligenceSource.isNotEmpty
-          ? verdict.intelligenceSource.toUpperCase()
-          : (fromCache ? 'LOCAL CACHE' : 'THREAT INTEL');
-      _lastThreatType = verdict.threatType.isNotEmpty
-          ? verdict.threatType
-          : (isDanger ? 'Threat' : 'Safe');
-      _riskScore = normalizedScore;
-      _isThreat = isDanger;
-      _isAnalyzing = false;
-      _isCallActive = false;
-      _isMinimized = false;
-    });
-  }
-
-  Future<void> _handleCallState(String state, String? number) async {
-    if (state == 'RINGING' || state == 'OFFHOOK') {
-      if (mounted) {
-        setState(() {
-          _status = state == 'RINGING'
-              ? 'INCOMING CALL ANALYSIS'
-              : 'VOICE ANALYSIS ACTIVE';
-          _isCallActive = true;
-          _phoneNumber = (number != null && number.isNotEmpty)
-              ? number
-              : _phoneNumber;
-          _callMessage = state == 'RINGING'
-              ? 'Preparing a live voice profile before the call is answered.'
-              : 'Collecting live voice features and updating the deepfake probability.';
-          _sourceApp = 'Phone Service';
-          _recommendation =
-              'Keep the conversation going while RiskGuard monitors the caller in the background.';
-          _intelSource = 'VOICE STREAM';
-          _isThreat = false;
-          _riskScore = 0.0;
-          _isAnalyzing = true;
-          _isMinimized = false;
-        });
-      }
-      await _setSurface(_OverlaySurface.call);
-      return;
-    }
-
+  Future<void> _handleCallEvent(Map<String, dynamic> event) async {
+    final state = (event['callState']?.toString() ?? event['normalizedTarget']?.toString() ?? '').toUpperCase();
+    if (state.isEmpty) return;
     if (state == 'IDLE') {
-      if (mounted) {
-        setState(() {
-          _status = 'CALL ENDED';
-          _callMessage = 'Call monitoring ended.';
-          _isCallActive = false;
-          _isAnalyzing = false;
-          _isMinimized = true;
-        });
-      }
-      await _setSurface(_OverlaySurface.bubble);
-    }
-  }
-
-  void _applyOverlayPayload(Map<String, dynamic> payload) {
-    final incomingStatus = payload['status']?.toString();
-    final incomingThreatText = payload['threatText']?.toString();
-    final incomingRecommendation = payload['recommendation']?.toString();
-    final incomingSource = payload['source']?.toString();
-    final incomingUrl = payload['url']?.toString();
-    final incomingIntelSource = payload['intelSource']?.toString();
-    final isCallActive = payload['isCallActive'] == true;
-    final normalizedStatus = incomingStatus?.toUpperCase() ?? '';
-    final isAnalyzing = payload['isAnalyzing'] == true ||
-        normalizedStatus.contains('SCAN') ||
-        normalizedStatus.contains('VERIFY') ||
-        normalizedStatus.contains('ANALYZ');
-
-    if (!mounted) return;
-    setState(() {
-      _status = incomingStatus ?? _status;
-      _threatText = incomingThreatText ?? _threatText;
-      _recommendation = incomingRecommendation ?? _recommendation;
-      _sourceApp = incomingSource ?? _sourceApp;
-      _scannedUrl = incomingUrl ?? _scannedUrl;
-      _intelSource = incomingIntelSource ?? _intelSource;
-      _isThreat = payload['isThreat'] == true;
-      _riskScore = _readRiskScore(payload['riskScore']);
-      _lastThreatType = payload['threatType']?.toString() ?? _lastThreatType;
-      _phoneNumber = payload['phoneNumber']?.toString() ?? _phoneNumber;
-      _callMessage = payload['message']?.toString() ?? _callMessage;
-      _isCallActive = isCallActive;
-      _isAnalyzing = isAnalyzing;
-      if (incomingStatus == 'CALL ENDED') {
-        _isMinimized = true;
-      } else if (incomingStatus != 'MONITORING ACTIVE') {
-        _isMinimized = false;
-      }
-    });
-
-    if (isCallActive) {
-      _setSurface(_OverlaySurface.call);
-    } else if (incomingStatus == 'CALL ENDED') {
-      _setSurface(_OverlaySurface.bubble);
-    } else if (incomingStatus != null && incomingStatus != 'MONITORING ACTIVE') {
-      _setSurface(_OverlaySurface.card);
-    }
-  }
-
-  Future<void> _setSurface(_OverlaySurface nextSurface) async {
-    if (_surface == nextSurface) {
+      await _clearSession();
       return;
     }
-    if (mounted) {
-      setState(() => _surface = nextSurface);
-    } else {
-      _surface = nextSurface;
-    }
+    final number = event['phoneNumber']?.toString();
+    _dismissTimer?.cancel();
+    _collapsedSessionId = null;
+    _setSession(_Session(
+      id: event['id']?.toString() ?? 'call-${DateTime.now().millisecondsSinceEpoch}',
+      kind: _SessionKind.call,
+      state: _SessionState.verifying,
+      sourcePackage: 'phone_service',
+      targetType: 'VOICE',
+      target: number?.isNotEmpty == true ? number! : _session.target,
+      status: state == 'RINGING' ? 'INCOMING CALL ANALYSIS' : 'VOICE STREAM',
+      summary: state == 'RINGING' ? 'Preparing the live caller profile before the call is answered.' : 'Monitoring the live voice stream while the call continues.',
+      recommendation: 'Use the native call controls for keypad, hold, merge, and conference actions.',
+      intelSource: 'VOICE STREAM',
+      threatType: 'VOICE',
+      phoneNumber: number?.isNotEmpty == true ? number! : _session.phoneNumber,
+      riskScore: 0,
+      isThreat: false,
+      previewPath: null,
+    ));
+    await _syncSurface();
+  }
 
-    switch (nextSurface) {
-      case _OverlaySurface.bubble:
-        await _resizeOverlay(_bubbleSize, _bubbleSize, true);
-        break;
-      case _OverlaySurface.card:
-        await _resizeOverlay(_cardWidth, _cardHeight, true);
-        break;
-      case _OverlaySurface.call:
-        await _resizeOverlay(-1, -1, false);
-        break;
+  void _handleOverlayStatus(Map<String, dynamic> event) {
+    final payload = event['payload'];
+    if (event['targetType'] == 'visibility' && payload is Map) {
+      final visibility = Map<String, dynamic>.from(payload);
+      final packageName = visibility['packageName']?.toString();
+      final visible = visibility['visible'] == true;
+      _visibilityHideTimer?.cancel();
+      if (visible) {
+        _foregroundPackage = packageName;
+        _foregroundWhitelisted = true;
+        unawaited(_syncSurface());
+      } else {
+        _visibilityHideTimer = Timer(const Duration(milliseconds: 520), () async {
+          _foregroundPackage = packageName;
+          _foregroundWhitelisted = false;
+          await _syncSurface();
+        });
+      }
+      return;
+    }
+    if (payload is Map) _applyPayload(Map<String, dynamic>.from(payload));
+  }
+
+  void _applyPayload(Map<String, dynamic> payload) {
+    final rawKind = (payload['sessionKind']?.toString() ?? payload['kind']?.toString() ?? '').toLowerCase();
+    final targetType = (payload['targetType']?.toString() ?? '').toLowerCase();
+    final sourcePackage =
+        payload['sourcePackage']?.toString() ??
+        payload['source']?.toString() ??
+        _session.sourcePackage;
+    final isCall =
+        payload['isCallActive'] == true ||
+        rawKind == 'call' ||
+        sourcePackage == 'phone_service' ||
+        payload.containsKey('callState');
+    if (isCall && ((payload['status']?.toString().toUpperCase() == 'CALL ENDED') || payload['isCallActive'] == false)) {
+      unawaited(_clearSession());
+      return;
+    }
+    final kind = isCall
+        ? _SessionKind.call
+        : (rawKind == 'media' ||
+                  targetType == 'image' ||
+                  targetType == 'video' ||
+                  targetType == 'text' ||
+                  targetType == 'voice')
+            ? _SessionKind.media
+            : _SessionKind.url;
+    final status = (payload['status']?.toString() ?? _session.status).toUpperCase();
+    final rawScore = payload['riskScore'] ?? payload['score'];
+    final score = rawScore is num
+        ? ((rawScore.toDouble() > 1) ? rawScore.toDouble() / 100 : rawScore.toDouble()).clamp(0.0, 1.0)
+        : _session.riskScore;
+    if (!isCall &&
+        sourcePackage.isNotEmpty &&
+        _foregroundPackage != null &&
+        _foregroundPackage != sourcePackage &&
+        sourcePackage != 'com.example.risk_guard') {
+      return;
+    }
+    final next = _Session(
+      id: payload['sessionId']?.toString() ?? payload['requestId']?.toString() ?? '${kind.name}-${DateTime.now().millisecondsSinceEpoch}',
+      kind: kind,
+      state: status.contains('VERIFY') || status.contains('ANALYZ') ? _SessionState.verifying : (status.contains('ERROR') || status.contains('DEGRADE') ? _SessionState.degraded : _SessionState.ready),
+      sourcePackage: sourcePackage,
+      targetType: (payload['targetType']?.toString() ?? _session.targetType).toUpperCase(),
+      target: payload['targetLabel']?.toString() ?? payload['url']?.toString() ?? payload['target']?.toString() ?? _session.target,
+      status: status,
+      summary: payload['threatText']?.toString() ?? payload['summary']?.toString() ?? _session.summary,
+      recommendation: payload['recommendation']?.toString() ?? _session.recommendation,
+      intelSource: (payload['analysisSource']?.toString() ?? payload['intelSource']?.toString() ?? _session.intelSource).toUpperCase(),
+      threatType: payload['threatType']?.toString() ?? _session.threatType,
+      phoneNumber: payload['phoneNumber']?.toString() ?? _session.phoneNumber,
+      riskScore: score,
+      isThreat: payload['isThreat'] == true || status.contains('DANGER') || status.contains('MALICIOUS'),
+      previewPath: payload['previewPath']?.toString() ?? payload['localFramePath']?.toString() ?? _session.previewPath,
+    );
+    _setSession(next);
+    unawaited(_syncSurface());
+    if (next.kind != _SessionKind.call && !_isAnalyzing) _scheduleDismiss(next.id);
+  }
+
+  void _scheduleDismiss(String sessionId) {
+    _dismissTimer?.cancel();
+    _dismissTimer = Timer(const Duration(seconds: 4), () async {
+      if (!mounted || _session.id != sessionId || _isAnalyzing || _session.kind == _SessionKind.call) return;
+      await _clearSession();
+    });
+  }
+
+  Future<void> _clearSession() async {
+    _dismissTimer?.cancel();
+    _collapsedSessionId = null;
+    _setSession(const _Session.idle());
+    await _syncSurface();
+  }
+
+  void _setSession(_Session next) {
+    if (_collapsedSessionId != null && _collapsedSessionId != next.id) {
+      _collapsedSessionId = null;
+    }
+    final previousPreview = _session.previewPath;
+    final nextPreview = next.previewPath;
+    if (mounted) {
+      setState(() => _session = next);
+    } else {
+      _session = next;
+    }
+    if (previousPreview != null &&
+        previousPreview.isNotEmpty &&
+        previousPreview != nextPreview) {
+      _cleanupPreview(previousPreview);
     }
   }
 
-  Future<void> _resizeOverlay(int width, int height, bool enableDrag) async {
-    try {
-      await FlutterOverlayWindow.resizeOverlay(width, height, enableDrag);
-    } catch (e) {
-      debugPrint('Overlay resize failed: $e');
+  Future<void> _syncSurface() async {
+    final desired = _session.kind == _SessionKind.call
+        ? _OverlaySurface.call
+        : (_cardAllowed ? _OverlaySurface.card : (_bubbleAllowed ? _OverlaySurface.bubble : _OverlaySurface.hidden));
+
+    if (_isSurfacePinned &&
+        _surface == _OverlaySurface.card &&
+        desired != _OverlaySurface.call) {
+      return;
     }
+    return _setSurface(desired);
+  }
+
+  Future<void> _rememberBubblePosition() async {
+    try {
+      _bubblePosition = await FlutterOverlayWindow.getOverlayPosition();
+    } catch (_) {}
+  }
+
+  OverlayPosition _defaultBubblePosition() {
+    final double maxX = math.max(12.0, _viewportSize.width - _bubbleSize - 12).toDouble();
+    final double maxY = math.max(120.0, _viewportSize.height - _bubbleSize - 24).toDouble();
+    final double x = maxX;
+    final y = (_viewportSize.height * 0.34).clamp(120.0, maxY).toDouble();
+    return OverlayPosition(x, y);
+  }
+
+  OverlayPosition _centeredPosition(double width, double height, {double topBias = 0}) {
+    final double maxX = math.max(12.0, _viewportSize.width - width - 12).toDouble();
+    final double maxY = math.max(24.0, _viewportSize.height - height - 24).toDouble();
+    final x = (((_viewportSize.width - width) / 2) + 0).clamp(12.0, maxX).toDouble();
+    final y = (((_viewportSize.height - height) / 2) + topBias).clamp(24.0, maxY).toDouble();
+    return OverlayPosition(x, y);
+  }
+
+  Future<void> _restoreBubblePosition() async {
+    try {
+      await FlutterOverlayWindow.moveOverlay(_bubblePosition ?? _defaultBubblePosition());
+    } catch (_) {}
+  }
+
+  OverlayPosition _clampBubblePosition(OverlayPosition position) {
+    final double maxX =
+        math.max(12.0, _viewportSize.width - _bubbleSize - 12).toDouble();
+    final double maxY =
+        math.max(120.0, _viewportSize.height - _bubbleSize - 24).toDouble();
+    return OverlayPosition(
+      position.x.clamp(12.0, maxX).toDouble(),
+      position.y.clamp(120.0, maxY).toDouble(),
+    );
+  }
+
+  Future<void> _beginBubbleDrag() async {
+    try {
+      final current = await FlutterOverlayWindow.getOverlayPosition();
+      _dragPosition = _clampBubblePosition(current);
+    } catch (_) {
+      _dragPosition = _bubblePosition ?? _defaultBubblePosition();
+    }
+  }
+
+  Future<void> _updateBubbleDrag(DragUpdateDetails details) async {
+    final current = _dragPosition ?? _bubblePosition ?? _defaultBubblePosition();
+    final next = _clampBubblePosition(
+      OverlayPosition(
+        current.x + details.delta.dx,
+        current.y + details.delta.dy,
+      ),
+    );
+    _dragPosition = next;
+    _bubblePosition = next;
+    try {
+      await FlutterOverlayWindow.moveOverlay(next);
+    } catch (_) {}
+  }
+
+  void _endBubbleDrag() {
+    final position = _dragPosition ?? _bubblePosition;
+    if (position != null) {
+      final double rightX =
+          math.max(12.0, _viewportSize.width - _bubbleSize - 12).toDouble();
+      final double snappedX =
+          position.x < (_viewportSize.width / 2) ? 12.0 : rightX;
+      final snapped = _clampBubblePosition(
+        OverlayPosition(snappedX, position.y),
+      );
+      _bubblePosition = snapped;
+      unawaited(FlutterOverlayWindow.moveOverlay(snapped));
+    }
+    _dragPosition = null;
+  }
+
+  Future<void> _moveCardToCenter() async {
+    final double width = math.max(
+      280.0,
+      _viewportSize.width < 420 ? _viewportSize.width - 24 : _cardWidth,
+    ).toDouble();
+    try {
+      await FlutterOverlayWindow.moveOverlay(_centeredPosition(width, _cardHeight));
+    } catch (_) {}
+  }
+
+  Future<void> _moveCallToAnchor() async {
+    final double callWidth = math.min(_viewportSize.width - 24, 364).toDouble();
+    final double callHeight = math.min(_viewportSize.height - 80, 388).toDouble();
+    try {
+      await FlutterOverlayWindow.moveOverlay(
+        _centeredPosition(callWidth, callHeight, topBias: -28),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _expandFromBubble() async {
+    await _rememberBubblePosition();
+    _collapsedSessionId = null;
+    _pinSurface(const Duration(seconds: 2));
+    if (_session.kind == _SessionKind.none && _foregroundWhitelisted) {
+      _setSession(
+        _session.copyWith(
+          sourcePackage: _foregroundPackage ?? '',
+          targetType: 'LIVE',
+          target: _appName(_foregroundPackage),
+          status: 'MONITORING CURRENT APP',
+          summary:
+              'RiskGuard is armed for the current whitelisted app and will surface the next supported realtime verdict here.',
+          recommendation:
+              'Open a visible link or supported analysis source to trigger a fresh result.',
+          intelSource: 'LIVE MONITOR',
+          threatType: 'Realtime Watch',
+        ),
+      );
+      if (_foregroundPackage != null && _foregroundPackage!.isNotEmpty) {
+        unawaited(
+          NativeBridge.requestRealtimeMediaCapture(
+            sourcePackage: _foregroundPackage,
+            reason: 'bubble_expand',
+          ),
+        );
+      }
+    }
+    await _setSurface(_session.kind == _SessionKind.call ? _OverlaySurface.call : _OverlaySurface.card);
+  }
+
+  Future<void> _setSurface(_OverlaySurface next) async {
+    final sameSurface = _surface == next;
+    if (mounted) {
+      setState(() => _surface = next);
+    } else {
+      _surface = next;
+    }
+
+    if (sameSurface) {
+      if (next == _OverlaySurface.card) {
+        await _moveCardToCenter();
+      } else if (next == _OverlaySurface.call) {
+        await _moveCallToAnchor();
+      }
+      return;
+    }
+
+    switch (next) {
+      case _OverlaySurface.hidden: {
+        await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
+        await FlutterOverlayWindow.resizeOverlay(1, 1, false);
+        break;
+      }
+      case _OverlaySurface.bubble: {
+        await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
+        await FlutterOverlayWindow.resizeOverlay(_bubbleSize.toInt(), _bubbleSize.toInt(), true);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        await _restoreBubblePosition();
+        break;
+      }
+      case _OverlaySurface.card: {
+        final double cardWidth = math.max(
+          280.0,
+          _viewportSize.width < 420 ? _viewportSize.width - 24 : _cardWidth,
+        ).toDouble();
+        await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
+        await FlutterOverlayWindow.resizeOverlay(
+          cardWidth.toInt(),
+          _cardHeight.toInt(),
+          false,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        await _moveCardToCenter();
+        break;
+      }
+      case _OverlaySurface.call: {
+        final double callWidth = math.min(_viewportSize.width - 24, 364).toDouble();
+        final double callHeight = math.min(_viewportSize.height - 80, 388).toDouble();
+        await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
+        await FlutterOverlayWindow.resizeOverlay(
+          callWidth.toInt(),
+          callHeight.toInt(),
+          false,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        await _moveCallToAnchor();
+        break;
+      }
+    }
+    _schedulePoll();
+  }
+
+  Future<void> _minimize() async {
+    if (_session.kind == _SessionKind.url || _session.kind == _SessionKind.media) {
+      _collapsedSessionId = _session.id;
+    }
+    await _rememberBubblePosition();
+    await _setSurface(_bubbleAllowed ? _OverlaySurface.bubble : _OverlaySurface.hidden);
   }
 
   @override
   void dispose() {
-    _pollingTimer?.cancel();
+    _pollTimer?.cancel();
+    _dismissTimer?.cancel();
+    _visibilityHideTimer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final view = View.of(context);
+    _viewportSize = Size(
+      view.display.size.width / view.display.devicePixelRatio,
+      view.display.size.height / view.display.devicePixelRatio,
+    );
+    if (_surface == _OverlaySurface.hidden) {
+      return const Material(color: Colors.transparent, child: SizedBox.shrink());
+    }
     return Material(
       color: Colors.transparent,
-      child: _surface == _OverlaySurface.call
-          ? _buildCallScanner()
-          : ((_isMinimized || _surface == _OverlaySurface.bubble)
-                ? _buildMinimizedBubble()
-                : _buildCommonOverlay()),
+      child: _surface == _OverlaySurface.call ? _buildCall() : (_surface == _OverlaySurface.bubble ? _buildBubble() : _buildCard()),
     );
   }
 
-  Widget _buildMinimizedBubble() {
-    final accentColor = _isThreat ? Colors.redAccent : Colors.cyanAccent;
+  Widget _buildBubble() {
+    final accent = _session.isThreat ? Colors.redAccent : Colors.cyanAccent;
+    final canExpand = _canExpandFromBubble;
+    final previewPath = _session.previewPath;
+    final hasPreview =
+        _session.kind == _SessionKind.media &&
+        previewPath != null &&
+        previewPath.isNotEmpty &&
+        File(previewPath).existsSync();
     return GestureDetector(
-      onTap: () async {
-        setState(() => _isMinimized = false);
-        await _setSurface(_OverlaySurface.card);
-      },
+      onTap: canExpand ? _expandFromBubble : null,
+      onPanStart: (_) => unawaited(_beginBubbleDrag()),
+      onPanUpdate: (details) => unawaited(_updateBubbleDrag(details)),
+      onPanEnd: (_) => _endBubbleDrag(),
+      onPanCancel: _endBubbleDrag,
       child: Container(
         margin: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: const Color(0xFF071120).withOpacity(0.95),
+          color: const Color(0xFF071120).withOpacity(0.96),
           shape: BoxShape.circle,
-          border: Border.all(
-            color: accentColor.withOpacity(0.75),
-            width: 2,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: accentColor.withOpacity(0.26),
-              blurRadius: 16,
-              spreadRadius: 2,
-            ),
-          ],
+          border: Border.all(color: accent.withOpacity(0.75), width: 2),
+          boxShadow: [BoxShadow(color: accent.withOpacity(0.22), blurRadius: 18)],
         ),
         child: Stack(
           alignment: Alignment.center,
           children: [
-            Icon(
-              _isThreat ? Icons.warning_rounded : Icons.security_rounded,
-              color: accentColor,
-              size: 30,
-            ),
-            if (_isAnalyzing)
-              Positioned(
-                top: 14,
-                right: 14,
-                child: Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                    color: Colors.orangeAccent,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.orangeAccent.withOpacity(0.45),
-                        blurRadius: 10,
-                        spreadRadius: 1,
-                      ),
-                    ],
+            if (hasPreview)
+              ClipOval(
+                child: SizedBox.expand(
+                  child: Image.file(
+                    File(previewPath),
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.low,
                   ),
                 ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCallScanner() {
-    final accentColor =
-        _riskScore >= 0.65 ? Colors.redAccent : Colors.cyanAccent;
-    final displayedScore = _riskScore > 0 ? _riskScore : 0.18;
-
-    return Container(
-      width: double.infinity,
-      height: double.infinity,
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Color(0xFF050A12),
-            Color(0xFF0B1421),
-            Color(0xFF050A12),
-          ],
-        ),
-      ),
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: accentColor.withOpacity(0.14),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: accentColor.withOpacity(0.35)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.graphic_eq_rounded,
-                          color: accentColor,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'RISKGUARD CALL ANALYSIS',
-                          style: TextStyle(
-                            color: accentColor,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 11,
-                            letterSpacing: 1.1,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () async {
-                      setState(() => _isMinimized = true);
-                      await _setSurface(_OverlaySurface.bubble);
-                    },
-                    icon: const Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      color: Colors.white70,
-                      size: 28,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
+              )
+            else
+              Icon(_session.isThreat ? Icons.warning_rounded : Icons.shield_rounded, color: accent, size: 28),
+            if (hasPreview)
               Container(
-                padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.04),
-                  borderRadius: BorderRadius.circular(28),
-                  border: Border.all(color: Colors.white.withOpacity(0.08)),
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 96,
-                      height: 96,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.white.withOpacity(0.06),
-                        border: Border.all(
-                          color: accentColor.withOpacity(0.35),
-                          width: 2,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.person_rounded,
-                        size: 52,
-                        color: Colors.white70,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Text(
-                      _phoneNumber,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _status,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.72),
-                        fontSize: 14,
-                        letterSpacing: 0.4,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        _buildCallChip('LIVE', accentColor),
-                        _buildCallChip('VOICE STREAM', Colors.greenAccent),
-                        _buildCallChip(
-                          _isAnalyzing ? 'ANALYZING' : 'STABLE',
-                          _isAnalyzing
-                              ? Colors.orangeAccent
-                              : Colors.cyanAccent,
-                        ),
-                      ],
-                    ),
-                  ],
+                  shape: BoxShape.circle,
+                  color: Colors.black.withOpacity(0.32),
                 ),
               ),
-              const SizedBox(height: 18),
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF09121F).withOpacity(0.96),
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: accentColor.withOpacity(0.26)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: accentColor.withOpacity(0.12),
-                        blurRadius: 26,
-                        spreadRadius: 1,
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            _isThreat
-                                ? Icons.warning_rounded
-                                : Icons.shield_rounded,
-                            color: accentColor,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Realtime Voice Verdict',
-                            style: TextStyle(
-                              color: accentColor,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const Spacer(),
-                          Text(
-                            _intelSource,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.5),
-                              fontSize: 11,
-                              letterSpacing: 1,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 18),
-                      LinearProgressIndicator(
-                        value: _isAnalyzing && _riskScore == 0
-                            ? null
-                            : displayedScore,
-                        backgroundColor: Colors.white12,
-                        color: accentColor,
-                        minHeight: 10,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildMetricCard(
-                              'Deepfake probability',
-                              '${(_riskScore * 100).round()}%',
-                              accentColor,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildMetricCard(
-                              'Current state',
-                              _isAnalyzing ? 'Profiling' : 'Stable',
-                              Colors.white,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _callMessage,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          height: 1.35,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        _recommendation,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.68),
-                          fontSize: 12,
-                          height: 1.35,
-                        ),
-                      ),
-                      const Spacer(),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () async {
-                                setState(() => _isMinimized = true);
-                                await _setSurface(_OverlaySurface.bubble);
-                              },
-                              icon: const Icon(
-                                Icons.picture_in_picture_alt_rounded,
-                              ),
-                              label: const Text('Minimize'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.white70,
-                                side: BorderSide(
-                                  color: Colors.white.withOpacity(0.16),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 14,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () async {
-                                setState(() {
-                                  _isCallActive = false;
-                                  _isMinimized = true;
-                                });
-                                await _setSurface(_OverlaySurface.bubble);
-                              },
-                              icon: const Icon(Icons.call_end_rounded),
-                              label: const Text('Hide Call Overlay'),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: const Color(0xFFE53935),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 14,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
+            if (hasPreview)
+              Icon(
+                _session.isThreat ? Icons.warning_rounded : Icons.photo_camera_back_rounded,
+                color: Colors.white,
+                size: 20,
               ),
-            ],
-          ),
+            Positioned(bottom: 16, child: Container(width: 10, height: 10, decoration: BoxDecoration(color: _isAnalyzing ? Colors.orangeAccent : accent, shape: BoxShape.circle))),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildCallChip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.14),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.8,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMetricCard(String label, String value, Color accentColor) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.07)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.5),
-              fontSize: 11,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              color: accentColor,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCommonOverlay() {
-    final accentColor = _isThreat ? Colors.redAccent : Colors.cyanAccent;
-    final statusLabel = _isAnalyzing
-        ? 'VERIFYING'
-        : (_isThreat ? 'DANGER' : 'SAFE');
-
+  Widget _buildCard() {
+    final accent = _session.isThreat ? Colors.redAccent : Colors.cyanAccent;
     return SafeArea(
       child: Center(
         child: Container(
@@ -885,227 +975,252 @@ class _RiskGuardOverlayState extends State<RiskGuardOverlay> {
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(28),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                const Color(0xFF08111D).withOpacity(0.97),
-                const Color(0xFF0F172A).withOpacity(0.97),
-              ],
-            ),
-            border: Border.all(
-              color: accentColor.withOpacity(0.34),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: accentColor.withOpacity(0.18),
-                blurRadius: 28,
-                spreadRadius: 1,
-              ),
-            ],
+            gradient: LinearGradient(colors: [const Color(0xFF08111D).withOpacity(0.97), const Color(0xFF0F172A).withOpacity(0.97)]),
+            border: Border.all(color: accent.withOpacity(0.34), width: 1.5),
+            boxShadow: [BoxShadow(color: accent.withOpacity(0.18), blurRadius: 28)],
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: accentColor.withOpacity(0.14),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      _isThreat
-                          ? Icons.gpp_bad_rounded
-                          : Icons.gpp_good_rounded,
-                      color: accentColor,
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'RISKGUARD PROACTIVE',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _sourceApp,
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.58),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.close_fullscreen_rounded,
-                      color: Colors.white70,
-                    ),
-                    onPressed: () async {
-                      setState(() => _isMinimized = true);
-                      await _setSurface(_OverlaySurface.bubble);
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _buildStatusBadge(statusLabel, accentColor),
-                  _buildStatusBadge(
-                    _lastThreatType.toUpperCase(),
-                    Colors.white70,
-                  ),
-                  _buildStatusBadge(_intelSource, Colors.orangeAccent),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white.withOpacity(0.08)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Captured target',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.48),
-                        fontSize: 11,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _formatUrl(_scannedUrl),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        height: 1.35,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-              LinearProgressIndicator(
-                value: _isAnalyzing ? null : (_riskScore > 0 ? _riskScore : 0.04),
-                backgroundColor: Colors.white12,
-                color: accentColor,
-                minHeight: 8,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _status,
-                      style: TextStyle(
-                        color: accentColor,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: accentColor.withOpacity(0.14),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      '${(_riskScore * 100).round()}% score',
-                      style: TextStyle(
-                        color: accentColor,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              CircleAvatar(radius: 22, backgroundColor: accent.withOpacity(0.14), child: Icon(_session.isThreat ? Icons.gpp_bad_rounded : Icons.gpp_good_rounded, color: accent)),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('RISKGUARD PROACTIVE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 0.8)),
+                Text(_appName(_session.sourcePackage), style: TextStyle(color: Colors.white.withOpacity(0.58), fontSize: 12)),
+              ])),
+              IconButton(onPressed: _minimize, icon: const Icon(Icons.remove_rounded, color: Colors.white70)),
+            ]),
+            const SizedBox(height: 12),
+            Wrap(spacing: 8, runSpacing: 8, children: [_pill(_isAnalyzing ? 'VERIFYING' : (_session.isThreat ? 'DANGER' : 'SAFE'), accent), _pill(_session.targetType, Colors.white70), _pill(_session.intelSource, Colors.orangeAccent)]),
+            const SizedBox(height: 14),
+            if (_session.kind == _SessionKind.media && _session.previewPath != null) ...[
+              _buildMediaPreview(_session.previewPath!, accent),
               const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: accentColor.withOpacity(0.09),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: accentColor.withOpacity(0.2)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _threatText,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _recommendation,
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.68),
-                        fontSize: 12,
-                        height: 1.35,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
             ],
-          ),
+            _info('Captured target', _session.target),
+            const SizedBox(height: 12),
+            LinearProgressIndicator(value: _isAnalyzing ? null : (_session.riskScore > 0 ? _session.riskScore : 0.04), backgroundColor: Colors.white12, color: accent, minHeight: 8, borderRadius: BorderRadius.circular(999)),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(child: Text(_session.status, style: TextStyle(color: accent, fontWeight: FontWeight.w700, fontSize: 13))),
+              Text('${(_session.riskScore * 100).round()}% score', style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 12),
+            _info(_session.threatType, _session.summary, footer: _session.recommendation),
+          ]),
         ),
       ),
     );
   }
 
-  Widget _buildStatusBadge(String label, Color color) {
+  Widget _buildCall() {
+    final accent = _session.riskScore >= 0.65 ? Colors.redAccent : Colors.cyanAccent;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.24)),
+        borderRadius: BorderRadius.circular(28),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xF20A1320), Color(0xF20E1A28)],
+        ),
+        border: Border.all(color: accent.withOpacity(0.28), width: 1.4),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.32), blurRadius: 24),
+          BoxShadow(color: accent.withOpacity(0.12), blurRadius: 18),
+        ],
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.6,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _pill('HYBRID CALL COMPANION', accent),
+              const Spacer(),
+              IconButton(
+                onPressed: _minimize,
+                icon: const Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  color: Colors.white70,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: accent.withOpacity(0.14),
+                child: Icon(
+                  Icons.person_rounded,
+                  size: 30,
+                  color: Colors.white.withOpacity(0.86),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Active Caller',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        letterSpacing: 0.7,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _session.phoneNumber,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _session.status,
+                      style: TextStyle(
+                        color: accent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _info(
+                  'Deepfake probability',
+                  '${(_session.riskScore * 100).round()}%',
+                  accent: accent,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _info(
+                  'Control path',
+                  'Use the native call UI for answer, keypad, hold, merge, and conference controls.',
+                  accent: accent,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _info(
+            'Realtime Voice Verdict',
+            _session.summary,
+            footer: _session.recommendation,
+            accent: accent,
+          ),
+          const SizedBox(height: 16),
+          LinearProgressIndicator(
+            value: _isAnalyzing ? null : (_session.riskScore > 0 ? _session.riskScore : 0.04),
+            backgroundColor: Colors.white10,
+            color: accent,
+            minHeight: 8,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _minimize,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: BorderSide(color: Colors.white.withOpacity(0.18)),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              icon: const Icon(Icons.minimize_rounded),
+              label: const Text('Minimize Call Companion'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMediaPreview(String previewPath, Color accent) {
+    final file = File(previewPath);
+    return Container(
+      height: 108,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withOpacity(0.22)),
+        color: Colors.white.withOpacity(0.05),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(17),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (file.existsSync())
+              Image.file(
+                file,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.low,
+              )
+            else
+              Container(color: const Color(0xFF0B1624)),
+            Positioned(
+              left: 10,
+              top: 10,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.48),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'LIVE FRAME',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Widget _pill(String label, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(999), border: Border.all(color: color.withOpacity(0.24))),
+    child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+  );
+
+  Widget _info(String title, String body, {String? footer, Color? accent, bool expand = false}) {
+    final child = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: (accent ?? Colors.white).withOpacity(0.08), borderRadius: BorderRadius.circular(18), border: Border.all(color: Colors.white.withOpacity(0.08))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min, children: [
+        Text(title, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11, letterSpacing: 0.5)),
+        const SizedBox(height: 8),
+        Text(body, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600, height: 1.35)),
+        if (footer != null) ...[
+          const SizedBox(height: 8),
+          Text(footer, style: TextStyle(color: Colors.white.withOpacity(0.68), fontSize: 12, height: 1.35)),
+        ],
+      ]),
+    );
+    return expand ? Expanded(child: child) : child;
   }
 }

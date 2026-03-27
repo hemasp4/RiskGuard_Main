@@ -1,65 +1,5 @@
 # RiskGuard Realtime Analysis and Intelligence Upgrade Plan
 
-## Future Upgrade Section
-
-Updated on: 2026-03-22 11:24:18 +05:30
-
-### New Requirements Added
-
-1. Realtime protection must behave like a deterministic power switch:
-   - when the user turns it on, accessibility validation, foreground protection, floating icon eligibility, and live analysis state must become active immediately
-   - when the user turns it off, all realtime services, overlays, and pending user-visible analysis states must shut down immediately without half-active leftovers
-2. The overlay pipeline must stop getting stuck on stale targets. If the user moves from WhatsApp to Instagram or from one post/link to the next, the captured target, source app label, and verdict state must rotate to the newest valid target instead of staying pinned to the previous one.
-3. Offline fallback must feel instant on-device. The target planning budget is sub-1-second feedback for offline verdicts and a 2-3 second ceiling for cloud-assisted verdicts, including staged UI updates while analysis continues.
-4. The analysis stack must support concurrency without cancelling protection. If one user triggers multiple captures in quick succession, the system should queue, prioritize, and expire stale work safely rather than dropping analysis or blocking the UI.
-5. Crash stability now needs a stronger dedicated track covering the `risk_guard keeps stopping` failure, the intermittent black-screen state with a lone `0`, overlay lifecycle failures, service restart gaps, and permission-state desynchronization during rapid toggling.
-6. The calling experience needs a future native-grade track. The long-term target is a normal full-screen phone experience with familiar controls such as answer, decline, speaker, mute, keypad, hold, merge, and caller info, while RiskGuard voice analytics stays integrated as an additional trusted layer.
-7. Performance must be planned for low-end Android devices as a first-class requirement. The full realtime stack should remain responsive on 3-4 GB RAM devices by reducing tree-walk pressure, overlay redraw churn, duplicate scans, and background memory growth.
-8. Scale readiness must be built into the plan now. The system should be shaped so one heavy user session does not stall the pipeline, and the backend/app contract can grow toward multiple concurrent users without breakdowns in queueing, retries, or event delivery.
-
-### Future Planning Notes
-
-- Split the realtime state model into four clear layers: permission state, service state, overlay visibility state, and active-analysis state. The master toggle should orchestrate all four from one source of truth.
-- Add a freshness-aware capture queue so the newest valid target can replace stale UI instantly, while older analysis jobs either finish in the background, merge into history, or expire safely when no longer relevant.
-- Define strict latency budgets for each analysis path:
-  - target extraction budget
-  - offline verdict budget
-  - cloud request budget
-  - overlay render budget
-- Introduce bounded worker scheduling and backpressure rules so repeated captures from scrolling, rapid app switching, or busy messaging sessions do not exhaust RAM or freeze the overlay.
-- Add a recovery plan for the background stack:
-  - crash diagnostics for accessibility and overlay services
-  - automatic service health checks
-  - restart-safe state restoration after process death
-- Plan a low-memory operating mode that reduces nonessential animations, limits retained scan history in memory, and downgrades expensive visual effects before Android force-stops the app.
-- Separate the future call experience into a dedicated delivery track: native-style call shell, RiskGuard analytics module, and graceful fallback behavior when OEM restrictions block full integration.
-- Add explicit scale-readiness checkpoints to the roadmap so local queueing, backend acknowledgements, retry policy, and anonymized intelligence-event streaming can grow beyond a single-device test scenario.
-
-## Plan Update
-
-Updated on: 2026-03-21 22:36:48 +05:30
-
-### Newly Added Ideas
-
-1. Realtime protection must keep working even after the main app UI is closed, as long as the user has realtime analysis enabled.
-2. The floating icon must not stay visible all the time. It should appear only when:
-   - a whitelisted app is currently in use
-   - or a call-analysis session is active
-3. When the user is outside the whitelisted apps, the protection stack should keep monitoring in the background, but the floating icon should stay hidden unless there is an active alert or call state that requires user-visible output.
-4. The `risk_guard keeps stopping` behavior needs a dedicated crash-stability investigation track, especially around:
-   - accessibility-service lifetime
-   - foreground-service survival after app close
-   - overlay visibility transitions between whitelisted apps, home screen, and call mode
-
-### Planning Notes for the Next Upgrade Pass
-
-- Add a foreground-app gate so overlay visibility is controlled by the current package and the whitelist state.
-- Separate `service active` from `overlay visible` so background monitoring can continue even when the bubble is hidden.
-- Add a persistence rule for app-close behavior:
-  - closing the UI must not stop protection services
-  - stopping protection explicitly from the app must stop them cleanly
-- Add a crash-diagnostics checklist for the background stack before the next implementation pass.
-
 ## Goal
 
 Upgrade only the realtime analysis pipeline, call/link overlay experience, backend connection handling, biometric startup flow, and intelligence system screen so the app feels fast, accurate, and stable on typical Android devices without changing the other tabs or unrelated UI.
@@ -230,3 +170,126 @@ The feature is considered ready for the TensorFlow-model integration phase when:
 - backend URL switching is reliable
 - intelligence map and terminal are driven by real backend data
 - the app remains responsive on repeated realtime usage
+
+---
+
+## Future Upgrade Section
+
+Updated on: 2026-03-23 10:28:34 +05:30
+
+### New Requirements Added
+
+1. Realtime protection must behave like a deterministic power switch:
+   - when the user turns it on, accessibility validation, foreground protection, floating icon eligibility, and live analysis state must become active immediately
+   - when the user turns it off, all realtime services, overlays, and pending user-visible analysis states must shut down immediately without half-active leftovers
+2. The overlay pipeline must stop getting stuck on stale targets. If the user moves from WhatsApp to Instagram or from one post/link to the next, the captured target, source app label, and verdict state must rotate to the newest valid target instead of staying pinned to the previous one.
+3. Offline fallback must feel instant on-device. The target planning budget is sub-1-second feedback for offline verdicts and a 2-3 second ceiling for cloud-assisted verdicts, including staged UI updates while analysis continues.
+4. The analysis stack must support concurrency without cancelling protection. If one user triggers multiple captures in quick succession, the system should queue, prioritize, and expire stale work safely rather than dropping analysis or blocking the UI.
+5. Crash stability now needs a stronger dedicated track covering the `risk_guard keeps stopping` failure, the intermittent black-screen state with a lone `0`, overlay lifecycle failures, service restart gaps, and permission-state desynchronization during rapid toggling.
+6. The calling experience needs a future native-grade track. The long-term target is a normal full-screen phone experience with familiar controls such as answer, decline, speaker, mute, keypad, hold, merge, and caller info, while RiskGuard voice analytics stays integrated as an additional trusted layer.
+7. Performance must be planned for low-end Android devices as a first-class requirement. The full realtime stack should remain responsive on 3-4 GB RAM devices by reducing tree-walk pressure, overlay redraw churn, duplicate scans, and background memory growth.
+8. Scale readiness must be built into the plan now. The system should be shaped so one heavy user session does not stall the pipeline, and the backend/app contract can grow toward multiple concurrent users without breakdowns in queueing, retries, or event delivery.
+9. **Background Persistence**: When the app is closed, all realtime features are currently closing; this must be corrected so that the protection remains active in the background until explicitly disabled.
+
+### Future Planning Notes
+
+- Split the realtime state model into four clear layers: permission state, service state, overlay visibility state, and active-analysis state. The master toggle should orchestrate all four from one source of truth.
+- Add a freshness-aware capture queue so the newest valid target can replace stale UI instantly, while older analysis jobs either finish in the background, merge into history, or expire safely when no longer relevant.
+- Define strict latency budgets for each analysis path:
+  - target extraction budget
+  - offline verdict budget
+  - cloud request budget
+  - overlay render budget
+- Introduce bounded worker scheduling and backpressure rules so repeated captures from scrolling, rapid app switching, or busy messaging sessions do not exhaust RAM or freeze the overlay.
+- Add a recovery plan for the background stack:
+  - crash diagnostics for accessibility and overlay services
+  - automatic service health checks
+  - restart-safe state restoration after process death
+- Plan a low-memory operating mode that reduces nonessential animations, limits retained scan history in memory, and downgrades expensive visual effects before Android force-stops the app.
+- Separate the future call experience into a dedicated delivery track: native-style call shell, RiskGuard analytics module, and graceful fallback behavior when OEM restrictions block full integration.
+- Add explicit scale-readiness checkpoints to the roadmap so local queueing, backend acknowledgements, retry policy, and anonymized intelligence-event streaming can grow beyond a single-device test scenario.
+- **Ensure that realtime features do not close when the application is closed or removed from the background.**
+
+## Plan Update
+
+Updated on: 2026-03-21 22:36:48 +05:30
+
+### Newly Added Ideas
+
+1. Realtime protection must keep working even after the main app UI is closed, as long as the user has realtime analysis enabled.
+2. The floating icon must not stay visible all the time. It should appear only when:
+   - a whitelisted app is currently in use
+   - or a call-analysis session is active
+3. When the user is outside the whitelisted apps, the protection stack should keep monitoring in the background, but the floating icon should stay hidden unless there is an active alert or call state that requires user-visible output.
+4. The `risk_guard keeps stopping` behavior needs a dedicated crash-stability investigation track, especially around:
+   - accessibility-service lifetime
+   - foreground-service survival after app close
+   - overlay visibility transitions between whitelisted apps, home screen, and call mode
+
+### Planning Notes for the Next Upgrade Pass
+
+- Add a foreground-app gate so overlay visibility is controlled by the current package and the whitelist state.
+- Separate `service active` from `overlay visible` so background monitoring can continue even when the bubble is hidden.
+- Add a persistence rule for app-close behavior:
+  - closing the UI must not stop protection services
+  - stopping protection explicitly from the app must stop them cleanly
+- Add a crash-diagnostics checklist for the background stack before the next implementation pass.
+
+---
+
+## Execution Update
+
+Updated on: 2026-03-24 00:00:00 +05:30
+
+### Root Causes Confirmed In Code
+
+1. The realtime toggle inside the security settings modal was still closing the bottom sheet because it called `Navigator.pop(ctx)` after every toggle action.
+2. Overlay visibility could stay stale because the accessibility service returned early for launcher, system UI, keyboard, and RiskGuard screens before emitting a visibility update.
+3. Whitelist gating was still permissive when no whitelist apps were enabled, which allowed the bubble to appear outside the intended app scope.
+4. The overlay runtime still depended on sticky bubble state and generic payload repainting, which allowed call-session state to leak into unrelated screens.
+5. The simplified Intelligence map painter had replaced the stronger world-map presentation and reduced the visual quality of the screen.
+
+### Changes Implemented In This Pass
+
+1. Native window changes now always recalculate overlay visibility before non-whitelisted or ignored packages are filtered out.
+2. Realtime scanning and bubble visibility are now strict whitelist-only from the native accessibility layer.
+3. The security settings realtime toggle no longer dismisses its own modal and is now bound to provider state through `Consumer`.
+4. Realtime provider teardown now closes the overlay runtime before stopping the foreground service so toggle-off hides UI immediately.
+5. The overlay runtime was rebuilt around typed session ownership for URL, media, and call flows.
+6. Call teardown now clears the session immediately on `IDLE` instead of leaving a lingering `CALL ENDED` card over unrelated apps.
+7. Bubble visibility is now derived from the current foreground whitelist state and live call state instead of a sticky flag.
+8. The Intelligence Center map was rebuilt with a denser cyber-map renderer, pulsing backend hotspots, grid overlay, and scan-line effect while keeping the privacy-safe terminal.
+
+### Current Verification Focus
+
+- repeated on/off toggles from both the main page and the security settings modal
+- bubble hidden on launcher, RiskGuard screens, and non-whitelisted apps
+- call overlay cleared immediately when the call ends
+- faster app switching between WhatsApp, Instagram, Chrome, and home screen
+- Intelligence map quality and correct pause/resume behavior while hidden
+
+---
+
+## Realtime UI Recovery Update
+
+Updated on: 2026-03-24 12:10:00 +05:30
+
+### Additional Conclusions Confirmed In Code
+
+1. The current native realtime event path still emits only `url_capture` and `call_state`. There is no true screen-media producer yet for visible image/video content, so live media verdicts cannot be honest until that producer exists.
+2. The floating bubble failed to reopen because collapsed sessions were being tracked in a way that blocked re-expansion.
+3. The overlay runtime was still launched with right-side gravity, which worked against free dragging and deterministic centered expansion.
+4. The call companion was still too intrusive because the overlay surface itself was oversized, not just the visual card.
+
+### Changes Added In This Follow-Up Pass
+
+1. Bubble expansion now reopens correctly after collapse, and tap-to-expand moves the analysis card to the center of the screen.
+2. Bubble position is preserved so the user can drag it and minimize back to the same location.
+3. Overlay runtime gravity was changed so the bubble is no longer forced back to the screen edge after movement.
+4. Manual overlay payloads from image, text, video-frame, and voice analysis screens were normalized into an explicit typed contract to reduce session leakage into realtime call state.
+5. The hybrid call companion was reshaped into a bottom-anchored panel instead of an oversized full-screen surface.
+6. The Intelligence Center world map painter was upgraded again with denser continent geometry and stronger coastline rendering.
+
+### Remaining Boundary
+
+- True live screen image/video analysis still requires a dedicated capture pipeline such as MediaProjection or another explicit media producer. The current fixes stabilize the realtime UI and session ownership, but they do not invent raw screen-media capture that the codebase does not yet have.

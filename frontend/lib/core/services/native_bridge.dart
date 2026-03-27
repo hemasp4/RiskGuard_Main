@@ -138,6 +138,17 @@ class NativeBridge {
     }
   }
 
+  /// Whether the native foreground service is currently marked as running.
+  static Future<bool> isForegroundServiceRunning() async {
+    if (kIsWeb) return false;
+    try {
+      return await _channel.invokeMethod('isForegroundServiceRunning') ?? false;
+    } on PlatformException catch (e) {
+      print("Failed to read foreground service state: '${e.message}'.");
+      return false;
+    }
+  }
+
   /// Stop the native RiskGuard foreground service
   static Future<void> stopForegroundService() async {
     if (kIsWeb) return;
@@ -145,6 +156,58 @@ class NativeBridge {
       await _channel.invokeMethod('stopForegroundService');
     } on PlatformException catch (e) {
       print("Failed to stop foreground service: '${e.message}'.");
+    }
+  }
+
+  /// Requests user consent for Android screen capture via MediaProjection.
+  /// Returns true when the capture session becomes active.
+  static Future<bool> requestMediaProjectionPermission() async {
+    if (kIsWeb) return false;
+    try {
+      return await _channel.invokeMethod('requestMediaProjectionPermission') ??
+          false;
+    } on PlatformException catch (e) {
+      print("Failed to request screen capture permission: '${e.message}'.");
+      return false;
+    }
+  }
+
+  /// Whether the native MediaProjection capture session is active.
+  static Future<bool> isMediaProjectionActive() async {
+    if (kIsWeb) return false;
+    try {
+      return await _channel.invokeMethod('isMediaProjectionActive') ?? false;
+    } on PlatformException catch (e) {
+      print("Failed to read screen capture state: '${e.message}'.");
+      return false;
+    }
+  }
+
+  /// Request a one-shot frame capture from the active screen-capture service.
+  static Future<bool> requestRealtimeMediaCapture({
+    String? sourcePackage,
+    String reason = 'manual',
+  }) async {
+    if (kIsWeb) return false;
+    try {
+      return await _channel.invokeMethod('requestRealtimeMediaCapture', {
+            'sourcePackage': sourcePackage,
+            'reason': reason,
+          }) ??
+          false;
+    } on PlatformException catch (e) {
+      print("Failed to request realtime media capture: '${e.message}'.");
+      return false;
+    }
+  }
+
+  /// Stop the MediaProjection-based capture service.
+  static Future<void> stopMediaProjectionService() async {
+    if (kIsWeb) return;
+    try {
+      await _channel.invokeMethod('stopMediaProjectionService');
+    } on PlatformException catch (e) {
+      print("Failed to stop screen capture service: '${e.message}'.");
     }
   }
 

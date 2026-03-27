@@ -148,7 +148,12 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen>
       } else {
         // Notify overlay for image scan
         await NativeBridge.sendMessageToOverlay({
+          'sessionKind': 'media',
+          'sourcePackage': 'com.example.risk_guard',
+          'targetType': 'image',
+          'targetLabel': _selectedFile!.name,
           'status': 'Analyzing image...',
+          'analysisSource': 'manual_scan',
           'isThreat': false,
           'threatText': 'Scanning pixels...',
         });
@@ -165,13 +170,21 @@ class _ImageRecognitionScreenState extends State<ImageRecognitionScreen>
           if (result.isSuccess && result.data != null) {
             // Success overlay update
             await NativeBridge.sendMessageToOverlay({
+              'sessionKind': 'media',
+              'sourcePackage': 'com.example.risk_guard',
+              'targetType': 'image',
+              'targetLabel': _selectedFile!.name,
               'status': 'Scan Complete',
+              'analysisSource': 'manual_scan',
               'isThreat': result.data!.isAiGenerated,
               'threatText': result.data!.isAiGenerated 
                   ? 'AI-Generated Content Detected!' 
                   : 'Authentic Image',
               'riskScore': result.data!.aiGeneratedProbability,
               'threatType': 'AI Image',
+              'recommendation': result.data!.isAiGenerated
+                  ? 'Treat the image as synthetic until verified by additional evidence.'
+                  : 'No strong AI-generation indicators were found in this image.',
             });
             _showImageResult(result.data!);
           } else {

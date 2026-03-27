@@ -263,7 +263,12 @@ class ApiService {
     try {
       // Notify overlay that we are starting frame analysis
       await NativeBridge.sendMessageToOverlay({
+        'sessionKind': 'media',
+        'sourcePackage': 'com.example.risk_guard',
+        'targetType': 'video',
+        'targetLabel': filename,
         'status': 'Analyzing video frames...',
+        'analysisSource': 'manual_scan',
         'isThreat': false,
         'threatText': 'Processing ${frames.length} frames',
       });
@@ -296,11 +301,19 @@ class ApiService {
         
         // Update overlay with result
         await NativeBridge.sendMessageToOverlay({
+          'sessionKind': 'media',
+          'sourcePackage': 'com.example.risk_guard',
+          'targetType': 'video',
+          'targetLabel': filename,
           'status': 'Analysis Complete',
+          'analysisSource': 'manual_scan',
           'isThreat': result.isDeepfake,
           'threatText': result.isDeepfake ? 'Deepfake Detected!' : 'Authentic Video',
           'riskScore': result.deepfakeProbability,
           'threatType': 'Video Deepfake',
+          'recommendation': result.isDeepfake
+              ? 'Review the media carefully before trusting or sharing it.'
+              : 'No strong deepfake indicators were found in the sampled frames.',
         });
 
         return ApiResult.success(result);
@@ -400,7 +413,7 @@ class ApiService {
   Future<ApiResult<List<GlobalThreat>>> getGlobalThreats() async {
     try {
       final response = await http
-          .get(_uri(ApiConfig.globalIntel))
+          .get(_uri('${ApiConfig.globalIntel}?scope=deepfake'))
           .timeout(ApiConfig.defaultTimeout);
       if (response.statusCode == 200) {
         final List jsonList = jsonDecode(response.body);
@@ -418,7 +431,7 @@ class ApiService {
   Future<ApiResult<List<RiskHotspot>>> getRiskMap() async {
     try {
       final response = await http
-          .get(_uri(ApiConfig.riskMap))
+          .get(_uri('${ApiConfig.riskMap}?scope=deepfake'))
           .timeout(ApiConfig.defaultTimeout);
       if (response.statusCode == 200) {
         final List jsonList = jsonDecode(response.body);

@@ -28,12 +28,14 @@ class RiskGuardForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForeground(101, buildNotification())
+        ProtectionEventStore.setForegroundServiceRunning(this, true)
         registerCallStateListener()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP_SERVICE") {
             stopCallStateListener()
+            ProtectionEventStore.setForegroundServiceRunning(this, false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             } else {
@@ -147,6 +149,7 @@ class RiskGuardForegroundService : Service() {
 
     override fun onDestroy() {
         stopCallStateListener()
+        ProtectionEventStore.setForegroundServiceRunning(this, false)
         super.onDestroy()
     }
 

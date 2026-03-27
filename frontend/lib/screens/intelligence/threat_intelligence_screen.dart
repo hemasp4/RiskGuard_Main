@@ -1,41 +1,62 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../../core/services/threat_intelligence_provider.dart';
-import '../../core/models/analysis_models.dart';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-// ══════════════════════════════════════════════════════════════════════════════
-// INTELLIGENCE CENTER — Professional Cyber Command UI
-// ══════════════════════════════════════════════════════════════════════════════
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
-class ThreatIntelligenceScreen extends StatelessWidget {
+import '../../core/models/analysis_models.dart';
+import '../../core/services/threat_intelligence_provider.dart';
+
+class ThreatIntelligenceScreen extends StatefulWidget {
   const ThreatIntelligenceScreen({super.key});
+
+  @override
+  State<ThreatIntelligenceScreen> createState() =>
+      _ThreatIntelligenceScreenState();
+}
+
+class _ThreatIntelligenceScreenState extends State<ThreatIntelligenceScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<ThreatIntelligenceProvider>().attachScreen();
+    });
+  }
+
+  @override
+  void dispose() {
+    if (mounted) {
+      context.read<ThreatIntelligenceProvider>().detachScreen();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF080C14),
+      backgroundColor: const Color(0xFF060B12),
       body: SafeArea(
         child: Consumer<ThreatIntelligenceProvider>(
           builder: (context, provider, child) {
             return Column(
               children: [
-                // ── Header ──
-                _buildHeader(context, provider),
-                // ── Status Pills ──
-                _buildStatusPills(provider),
-                // ── World Map ──
+                _Header(provider: provider),
+                _StatusRow(provider: provider),
                 Expanded(
                   flex: 5,
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: _CyberWorldMap(provider: provider),
+                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+                    child: _WorldMapPanel(provider: provider),
                   ),
                 ),
-                // ── Live Threat Feed ──
                 Expanded(
                   flex: 4,
-                  child: _LiveThreatFeed(provider: provider),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                    child: _TerminalPanel(provider: provider),
+                  ),
                 ),
               ],
             );
@@ -44,154 +65,104 @@ class ThreatIntelligenceScreen extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _buildHeader(BuildContext context, ThreatIntelligenceProvider provider) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+class _Header extends StatelessWidget {
+  const _Header({required this.provider});
+  final ThreatIntelligenceProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
       child: Row(
         children: [
-          // Back button
           IconButton(
-            icon: const Icon(Icons.arrow_back_ios, color: Colors.white70, size: 18),
             onPressed: () => Navigator.of(context).pop(),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+            color: Colors.white70,
           ),
-          const SizedBox(width: 8),
-          // Shield icon
           Container(
-            padding: const EdgeInsets.all(6),
+            width: 42,
+            height: 42,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.redAccent.withOpacity(0.5), width: 1.5),
+              border: Border.all(color: const Color(0xFF26D9FF).withOpacity(0.35)),
+              gradient: const LinearGradient(
+                colors: [Color(0x2214B8A6), Color(0x1117C6FF)],
+              ),
             ),
-            child: const Icon(Icons.shield, color: Colors.redAccent, size: 18),
+            child: const Icon(
+              Icons.public_rounded,
+              color: Color(0xFF26D9FF),
+              size: 20,
+            ),
           ),
-          const SizedBox(width: 10),
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'RiskGuard',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1,
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Intelligence Center',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-              ),
-              Text(
-                'INTELLIGENCE CENTER',
-                style: TextStyle(
-                  color: Colors.redAccent,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 2,
+                SizedBox(height: 2),
+                Text(
+                  'Privacy-safe deepfake telemetry only',
+                  style: TextStyle(
+                    color: Color(0xFF7AA6C1),
+                    fontSize: 12,
+                    letterSpacing: 0.3,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const Spacer(),
-          // Settings / Info
-          IconButton(
-            icon: Icon(Icons.info_outline, color: Colors.white.withOpacity(0.5), size: 20),
-            onPressed: () => _showIntelligenceInfo(context),
+              ],
+            ),
           ),
           IconButton(
-            icon: Icon(Icons.refresh, color: Colors.white.withOpacity(0.5), size: 20),
-            onPressed: () => provider.refreshAll(),
+            onPressed: provider.isLoading ? null : provider.refreshAll,
+            icon: const Icon(Icons.refresh_rounded),
+            color: const Color(0xFF26D9FF),
+          ),
+          IconButton(
+            onPressed: () => _showInfo(context),
+            icon: const Icon(Icons.info_outline_rounded),
+            color: Colors.white54,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildStatusPills(ThreatIntelligenceProvider provider) {
-    final maxIntensity = provider.hotspots.fold<double>(
-      0.0,
-      (current, hotspot) =>
-          hotspot.intensity > current ? hotspot.intensity : current,
-    );
-    final normalizedIntensity = maxIntensity > 1
-        ? (maxIntensity / 100).clamp(0.0, 1.0)
-        : maxIntensity.clamp(0.0, 1.0);
-    final scanLevel = normalizedIntensity >= 0.8
-        ? 'CRITICAL'
-        : normalizedIntensity >= 0.55
-        ? 'HIGH'
-        : provider.isLoading
-        ? 'SYNCING'
-        : 'GUARDED';
-    final scanColor = normalizedIntensity >= 0.8
-        ? Colors.redAccent
-        : normalizedIntensity >= 0.55
-        ? Colors.orangeAccent
-        : Colors.greenAccent;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        children: [
-          _StatusPill(
-            label: 'THREAT LEVEL',
-            value: scanLevel,
-            color: scanColor,
-          ),
-          const SizedBox(width: 8),
-          _StatusPill(
-            label: 'HOTSPOTS',
-            value: provider.hotspots.isEmpty
-                ? '--'
-                : provider.hotspots.length.toString(),
-            color: Colors.cyanAccent,
-          ),
-          const SizedBox(width: 8),
-          _StatusPill(
-            label: 'FEED',
-            value: provider.isLoading
-                ? 'SYNCING'
-                : provider.globalThreats.isEmpty
-                ? 'IDLE'
-                : 'LIVE',
-            color: provider.isLoading ? Colors.orangeAccent : Colors.greenAccent,
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showIntelligenceInfo(BuildContext context) {
-    showDialog(
+  void _showInfo(BuildContext context) {
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111827),
+        backgroundColor: const Color(0xFF0B1421),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Colors.redAccent, width: 0.5),
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: Colors.white.withOpacity(0.08)),
         ),
         title: const Text(
-          'SYSTEM DEBRIEF',
-          style: TextStyle(
-            color: Colors.redAccent,
-            fontFamily: 'monospace',
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
-          ),
+          'Intelligence Scope',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
         ),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _InfoItem(title: 'Global Threat Map', desc: 'Real-time geographic visualization of active cyber threats worldwide.'),
-            _InfoItem(title: 'Red Hotspots', desc: 'High-intensity threat zones detected by our 2.8k intercept nodes.'),
-            _InfoItem(title: 'Live Feed', desc: 'Unfiltered detection stream from the proactive threat verification engine.'),
-            _InfoItem(title: 'Status Pills', desc: 'Current system state — scan intensity, active nodes, and stealth mode.'),
-          ],
+        content: const Text(
+          'This view shows aggregated deepfake telemetry only. It does not expose usernames, phone numbers, raw URLs, file names, exact coordinates, or device identifiers.',
+          style: TextStyle(
+            color: Color(0xFFB8C7D1),
+            fontSize: 13,
+            height: 1.5,
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ACKNOWLEDGE', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
           ),
         ],
       ),
@@ -199,81 +170,149 @@ class ThreatIntelligenceScreen extends StatelessWidget {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// STATUS PILL
-// ══════════════════════════════════════════════════════════════════════════════
-
-class _StatusPill extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-  const _StatusPill({required this.label, required this.value, required this.color});
+class _StatusRow extends StatelessWidget {
+  const _StatusRow({required this.provider});
+  final ThreatIntelligenceProvider provider;
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: color.withOpacity(0.25), width: 0.5),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: TextStyle(color: color.withOpacity(0.6), fontSize: 7, fontWeight: FontWeight.w600, letterSpacing: 1),
+    final hasData =
+        provider.terminalThreats.isNotEmpty || provider.hotspots.isNotEmpty;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(
+        children: [
+          Expanded(
+            child: _StatusChip(
+              label: 'Feed',
+              value: provider.isLoading
+                  ? 'SYNCING'
+                  : hasData
+                  ? 'LIVE'
+                  : 'STANDBY',
+              color: provider.isLoading
+                  ? Colors.orangeAccent
+                  : hasData
+                  ? const Color(0xFF26D9FF)
+                  : Colors.greenAccent,
             ),
-            const SizedBox(height: 2),
-            Text(
-              value,
-              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _StatusChip(
+              label: 'Hotspots',
+              value: provider.hotspots.length.toString(),
+              color: const Color(0xFF26D9FF),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: _StatusChip(
+              label: 'Mode',
+              value: 'DEEPFAKE',
+              color: Color(0xFF14B8A6),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// CYBER WORLD MAP — Full professional dot-matrix map with threat hotspots
-// ══════════════════════════════════════════════════════════════════════════════
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
 
-class _CyberWorldMap extends StatelessWidget {
-  final ThreatIntelligenceProvider provider;
-  const _CyberWorldMap({required this.provider});
+  final String label;
+  final String value;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF0A1020),
-        borderRadius: BorderRadius.circular(16),
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              color: color.withOpacity(0.75),
+              fontSize: 10,
+              letterSpacing: 1,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorldMapPanel extends StatelessWidget {
+  const _WorldMapPanel({required this.provider});
+  final ThreatIntelligenceProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasData = provider.hotspots.isNotEmpty;
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF08111D), Color(0xFF0D1726)],
+        ),
         border: Border.all(color: Colors.white.withOpacity(0.06)),
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(24),
         child: Stack(
           children: [
-            // Dot-matrix world map
             Positioned.fill(
               child: CustomPaint(painter: _ProfessionalWorldMapPainter()),
             ),
-            // Animated threat hotspots overlay
-            Positioned.fill(
-              child: _ThreatHotspotsOverlay(provider: provider),
-            ),
-            // Scan lines effect
-            Positioned.fill(
-              child: _ScanLineEffect(),
-            ),
-            // Grid overlay for cyber effect
-            Positioned.fill(
-              child: CustomPaint(painter: _GridOverlayPainter()),
+            Positioned.fill(child: CustomPaint(painter: _GridPainter())),
+            Positioned.fill(child: _ScanLineEffect()),
+            Positioned.fill(child: _HotspotLayer(hotspots: provider.hotspots)),
+            Positioned(
+              left: 18,
+              top: 18,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xCC08111D),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                ),
+                child: Text(
+                  hasData
+                      ? 'Aggregated deepfake hotspots only'
+                      : 'Terminal standing by for validated deepfake telemetry',
+                  style: const TextStyle(
+                    color: Color(0xFFB8C7D1),
+                    fontSize: 11,
+                  ),
+                ),
+              ),
             ),
           ],
         ),
@@ -282,228 +321,157 @@ class _CyberWorldMap extends StatelessWidget {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// PROFESSIONAL WORLD MAP PAINTER — Accurate continent dot-matrix
-// ══════════════════════════════════════════════════════════════════════════════
-
-class _ProfessionalWorldMapPainter extends CustomPainter {
-  // World coordinates [lon, lat] mapped to canvas coordinates using
-  // Equirectangular projection. Polygons are simplified but geographically accurate.
-  // lon: -180..+180 → x: 0..width
-  // lat: +90..-90  → y: 0..height
-
-  Offset _project(double lon, double lat, Size size) {
-    final x = (lon + 180) / 360 * size.width;
-    final y = (90 - lat) / 180 * size.height;
-    return Offset(x, y);
-  }
-
-  Path _buildContinent(List<List<double>> coords, Size size) {
-    final path = Path();
-    if (coords.isEmpty) return path;
-    final first = _project(coords[0][0], coords[0][1], size);
-    path.moveTo(first.dx, first.dy);
-    for (int i = 1; i < coords.length; i++) {
-      final p = _project(coords[i][0], coords[i][1], size);
-      path.lineTo(p.dx, p.dy);
-    }
-    path.close();
-    return path;
-  }
+class _TerminalPanel extends StatelessWidget {
+  const _TerminalPanel({required this.provider});
+  final ThreatIntelligenceProvider provider;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    // ── Continent coordinate data (simplified polygons in [lon, lat]) ──
-
-    // North America
-    final northAmerica = _buildContinent([
-      [-168, 72], [-140, 70], [-130, 72], [-100, 72], [-85, 75],
-      [-60, 72], [-55, 52], [-65, 45], [-70, 43], [-75, 35],
-      [-80, 25], [-88, 18], [-97, 16], [-105, 20], [-117, 32],
-      [-125, 48], [-135, 58], [-145, 60], [-165, 63], [-168, 72],
-    ], size);
-
-    // Greenland
-    final greenland = _buildContinent([
-      [-55, 82], [-20, 82], [-15, 75], [-20, 60], [-45, 60], [-55, 65], [-55, 82],
-    ], size);
-
-    // South America
-    final southAmerica = _buildContinent([
-      [-80, 10], [-60, 12], [-50, 5], [-35, -5], [-35, -20],
-      [-40, -22], [-50, -30], [-55, -35], [-65, -55], [-75, -50],
-      [-70, -18], [-75, -5], [-80, 0], [-80, 10],
-    ], size);
-
-    // Central America
-    final centralAmerica = _buildContinent([
-      [-88, 18], [-80, 10], [-77, 8], [-82, 8], [-85, 10], [-90, 14], [-92, 16], [-88, 18],
-    ], size);
-
-    // Europe
-    final europe = _buildContinent([
-      [-10, 60], [5, 62], [15, 70], [30, 72], [40, 68],
-      [45, 55], [40, 50], [30, 45], [20, 40], [10, 38],
-      [0, 36], [-10, 36], [-10, 43], [-5, 48], [-10, 55], [-10, 60],
-    ], size);
-
-    // UK/Ireland
-    final uk = _buildContinent([
-      [-10, 58], [-5, 58], [2, 56], [2, 51], [-5, 50], [-10, 52], [-10, 58],
-    ], size);
-
-    // Africa
-    final africa = _buildContinent([
-      [-15, 35], [10, 37], [30, 32], [35, 30], [42, 12], [50, 5],
-      [40, -12], [35, -25], [28, -34], [18, -35], [12, -20],
-      [10, 0], [5, 5], [-5, 5], [-15, 10], [-17, 15], [-15, 35],
-    ], size);
-
-    // Madagascar
-    final madagascar = _buildContinent([
-      [44, -12], [50, -15], [50, -25], [44, -25], [44, -12],
-    ], size);
-
-    // Asia (mainland)
-    final asia = _buildContinent([
-      [45, 55], [60, 60], [70, 65], [90, 72], [120, 75], [140, 72],
-      [155, 62], [160, 55], [140, 50], [130, 42], [120, 30],
-      [110, 20], [100, 10], [95, 5], [80, 8], [75, 15],
-      [70, 25], [60, 30], [50, 35], [40, 35], [30, 45], [40, 50], [45, 55],
-    ], size);
-
-    // Japan
-    final japan = _buildContinent([
-      [130, 45], [140, 45], [145, 40], [140, 33], [130, 32], [130, 45],
-    ], size);
-
-    // Indonesia / SE Asia islands
-    final indonesia = _buildContinent([
-      [95, 6], [105, 6], [115, -2], [125, -5], [140, -5],
-      [140, -10], [115, -8], [105, -5], [95, 0], [95, 6],
-    ], size);
-
-    // Philippines
-    final philippines = _buildContinent([
-      [118, 18], [125, 18], [127, 10], [122, 6], [118, 10], [118, 18],
-    ], size);
-
-    // Australia
-    final australia = _buildContinent([
-      [115, -12], [135, -12], [150, -15], [153, -25], [150, -38],
-      [140, -38], [130, -35], [115, -35], [113, -25], [115, -12],
-    ], size);
-
-    // New Zealand
-    final newZealand = _buildContinent([
-      [166, -35], [178, -38], [178, -46], [168, -46], [166, -35],
-    ], size);
-
-    // India subcontinent (more detail)
-    final india = _buildContinent([
-      [68, 28], [75, 32], [88, 27], [92, 22], [88, 12],
-      [80, 8], [75, 12], [72, 18], [68, 22], [68, 28],
-    ], size);
-
-    // Arabian Peninsula
-    final arabia = _buildContinent([
-      [35, 30], [42, 28], [50, 26], [56, 22], [55, 15],
-      [48, 12], [43, 14], [35, 20], [35, 30],
-    ], size);
-
-    final continents = [
-      northAmerica, greenland, southAmerica, centralAmerica,
-      europe, uk, africa, madagascar,
-      asia, japan, indonesia, philippines,
-      australia, newZealand, india, arabia,
-    ];
-
-    // ── Draw dots inside continents ──
-    final landDotPaint = Paint()
-      ..color = const Color(0xFF2A4A6B).withOpacity(0.8)
-      ..style = PaintingStyle.fill;
-
-    final landDotBrightPaint = Paint()
-      ..color = const Color(0xFF3D6B99).withOpacity(0.6)
-      ..style = PaintingStyle.fill;
-
-    const double spacing = 5.0;
-    const double dotRadius = 1.0;
-
-    for (double x = 0; x < size.width; x += spacing) {
-      for (double y = 0; y < size.height; y += spacing) {
-        final point = Offset(x, y);
-        for (final continent in continents) {
-          if (continent.contains(point)) {
-            // Add slight variation for organic look
-            final hash = (x * 7 + y * 13).toInt() % 5;
-            canvas.drawCircle(
-              point,
-              dotRadius,
-              hash == 0 ? landDotBrightPaint : landDotPaint,
-            );
-            break;
-          }
-        }
-      }
-    }
-
-    // ── Draw continent outlines (subtle glow) ──
-    final outlinePaint = Paint()
-      ..color = const Color(0xFF1A3A5C).withOpacity(0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
-
-    for (final continent in continents) {
-      canvas.drawPath(continent, outlinePaint);
-    }
+  Widget build(BuildContext context) {
+    final threats = provider.terminalThreats;
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        color: const Color(0xFF08111A),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withOpacity(0.06)),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF26D9FF),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'THREAT TERMINAL',
+                  style: TextStyle(
+                    color: Color(0xFF26D9FF),
+                    fontSize: 12,
+                    letterSpacing: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${threats.length} EVENTS',
+                  style: const TextStyle(
+                    color: Color(0xFF6A8293),
+                    fontSize: 11,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: threats.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'No verified deepfake hotspots in the current window.\nTerminal standing by for validated telemetry.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF7AA6C1),
+                          fontSize: 13,
+                          height: 1.6,
+                        ),
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    itemCount: threats.length,
+                    separatorBuilder: (_, __) =>
+                        Divider(height: 18, color: Colors.white.withOpacity(0.04)),
+                    itemBuilder: (context, index) =>
+                        _TerminalRow(threat: threats[index]),
+                  ),
+          ),
+        ],
+      ),
+    );
   }
-
-  @override
-  bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GRID OVERLAY for tech feel
-// ══════════════════════════════════════════════════════════════════════════════
+class _TerminalRow extends StatelessWidget {
+  const _TerminalRow({required this.threat});
+  final GlobalThreat threat;
 
-class _GridOverlayPainter extends CustomPainter {
   @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.015)
-      ..strokeWidth = 0.5;
-
-    // Horizontal lines
-    for (double y = 0; y < size.height; y += 40) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-    // Vertical lines
-    for (double x = 0; x < size.width; x += 40) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
+  Widget build(BuildContext context) {
+    final severityColor = switch (threat.severity) {
+      'CRITICAL' => Colors.redAccent,
+      'HIGH' => Colors.orangeAccent,
+      _ => const Color(0xFF26D9FF),
+    };
+    final timestamp = threat.timestamp.length >= 19
+        ? threat.timestamp.substring(11, 19)
+        : threat.timestamp;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$timestamp | ${threat.region} | ${threat.threatClass.toUpperCase()} | ${threat.severity} | ${threat.confidenceBand} | ${threat.analysisSource.toUpperCase()}',
+          style: TextStyle(
+            color: severityColor,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            height: 1.4,
+            fontFamily: 'monospace',
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${threat.cityOrZoneLabel} :: ${threat.artifactSummary}',
+          style: const TextStyle(
+            color: Color(0xFFB8C7D1),
+            fontSize: 12,
+            height: 1.5,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
+    );
   }
-
-  @override
-  bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SCAN LINE EFFECT
-// ══════════════════════════════════════════════════════════════════════════════
+class _HotspotLayer extends StatefulWidget {
+  const _HotspotLayer({required this.hotspots});
+  final List<RiskHotspot> hotspots;
 
-class _ScanLineEffect extends StatefulWidget {
   @override
-  State<_ScanLineEffect> createState() => _ScanLineEffectState();
+  State<_HotspotLayer> createState() => _HotspotLayerState();
 }
 
-class _ScanLineEffectState extends State<_ScanLineEffect> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+class _HotspotLayerState extends State<_HotspotLayer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
   }
 
   @override
@@ -518,104 +486,20 @@ class _ScanLineEffectState extends State<_ScanLineEffect> with SingleTickerProvi
       animation: _controller,
       builder: (context, child) {
         return CustomPaint(
-          painter: _ScanLinePainter(progress: _controller.value),
+          painter: _HotspotPainter(
+            hotspots: widget.hotspots,
+            progress: _controller.value,
+          ),
         );
       },
     );
   }
 }
 
-class _ScanLinePainter extends CustomPainter {
+class _HotspotPainter extends CustomPainter {
+  const _HotspotPainter({required this.hotspots, required this.progress});
+  final List<RiskHotspot> hotspots;
   final double progress;
-  _ScanLinePainter({required this.progress});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final y = size.height * progress;
-    final paint = Paint()
-      ..shader = ui.Gradient.linear(
-        Offset(0, y - 20),
-        Offset(0, y + 20),
-        [
-          Colors.transparent,
-          Colors.redAccent.withOpacity(0.08),
-          Colors.transparent,
-        ],
-        [0.0, 0.5, 1.0],
-      );
-    canvas.drawRect(Rect.fromLTWH(0, y - 20, size.width, 40), paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _ScanLinePainter oldDelegate) => true;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ANIMATED THREAT HOTSPOTS — Red glowing pulses on the map
-// ══════════════════════════════════════════════════════════════════════════════
-
-class _ThreatHotspotsOverlay extends StatefulWidget {
-  final ThreatIntelligenceProvider provider;
-  const _ThreatHotspotsOverlay({required this.provider});
-
-  @override
-  State<_ThreatHotspotsOverlay> createState() => _ThreatHotspotsOverlayState();
-}
-
-class _ThreatHotspotsOverlayState extends State<_ThreatHotspotsOverlay> with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-
-  // Fixed threat hotspot locations [lon, lat, intensity]
-  static const List<List<double>> _threatLocations = [
-    // Major cyber threat hotspots worldwide
-    [-74.0, 40.7, 0.9],    // New York
-    [-118.2, 34.0, 0.7],   // Los Angeles
-    [-87.6, 41.9, 0.5],    // Chicago
-    [-99.1, 19.4, 0.6],    // Mexico City
-    [-43.2, -22.9, 0.5],   // Rio de Janeiro
-    [-58.4, -34.6, 0.4],   // Buenos Aires
-    [0.0, 51.5, 0.8],      // London
-    [2.3, 48.9, 0.6],      // Paris
-    [13.4, 52.5, 0.5],     // Berlin
-    [37.6, 55.8, 0.9],     // Moscow
-    [12.5, 41.9, 0.4],     // Rome
-    [28.9, 41.0, 0.5],     // Istanbul
-    [31.2, 30.0, 0.4],     // Cairo
-    [3.4, 6.5, 0.6],       // Lagos
-    [36.8, -1.3, 0.3],     // Nairobi
-    [55.3, 25.3, 0.5],     // Dubai
-    [51.4, 35.7, 0.7],     // Tehran
-    [69.0, 33.9, 0.4],     // Kabul
-    [72.9, 19.1, 0.6],     // Mumbai
-    [77.2, 28.6, 0.7],     // Delhi
-    [88.4, 22.6, 0.4],     // Kolkata
-    [100.5, 13.8, 0.5],    // Bangkok
-    [103.8, 1.4, 0.6],     // Singapore
-    [106.8, -6.2, 0.5],    // Jakarta
-    [116.4, 39.9, 0.95],   // Beijing
-    [121.5, 31.2, 0.85],   // Shanghai
-    [126.9, 37.6, 0.7],    // Seoul
-    [139.7, 35.7, 0.8],    // Tokyo
-    [114.2, 22.3, 0.6],    // Hong Kong
-    [121.0, 14.6, 0.4],    // Manila
-    [151.2, -33.9, 0.5],   // Sydney
-    [174.8, -41.3, 0.3],   // Wellington
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2500),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
 
   Offset _project(double lon, double lat, Size size) {
     final x = (lon + 180) / 360 * size.width;
@@ -623,282 +507,239 @@ class _ThreatHotspotsOverlayState extends State<_ThreatHotspotsOverlay> with Sin
     return Offset(x, y);
   }
 
-  List<List<double>> get _resolvedLocations {
-    if (widget.provider.hotspots.isEmpty) {
-      return _threatLocations;
-    }
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final hotspot in hotspots.take(20)) {
+      final point = _project(hotspot.lng, hotspot.lat, size);
+      final pulse = (math.sin((progress * math.pi * 2) - hotspot.intensity) + 1) / 2;
+      final radius = 5 + (18 * hotspot.intensity * pulse);
+      final color = hotspot.intensity >= 0.8
+          ? Colors.redAccent
+          : hotspot.intensity >= 0.55
+          ? Colors.orangeAccent
+          : const Color(0xFF26D9FF);
 
-    return widget.provider.hotspots.map((hotspot) {
-      final normalizedIntensity = hotspot.intensity > 1
-          ? (hotspot.intensity / 100).clamp(0.18, 1.0).toDouble()
-          : hotspot.intensity.clamp(0.18, 1.0).toDouble();
-      return [hotspot.lng, hotspot.lat, normalizedIntensity];
-    }).toList();
+      canvas.drawCircle(
+        point,
+        radius,
+        Paint()
+          ..color = color.withOpacity(0.16)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+      );
+      canvas.drawCircle(
+        point,
+        2.8 + hotspot.intensity * 3,
+        Paint()
+          ..color = color.withOpacity(0.94)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HotspotPainter oldDelegate) =>
+      oldDelegate.progress != progress || oldDelegate.hotspots != hotspots;
+}
+
+class _ScanLineEffect extends StatefulWidget {
+  @override
+  State<_ScanLineEffect> createState() => _ScanLineEffectState();
+}
+
+class _ScanLineEffectState extends State<_ScanLineEffect>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _pulseController,
-      builder: (context, child) {
-        return CustomPaint(
-          painter: _HotspotsPainter(
-            progress: _pulseController.value,
-            locations: _resolvedLocations,
-            projectFn: _project,
-          ),
-        );
-      },
+      animation: _controller,
+      builder: (context, child) =>
+          CustomPaint(painter: _ScanLinePainter(progress: _controller.value)),
     );
   }
 }
 
-class _HotspotsPainter extends CustomPainter {
+class _ScanLinePainter extends CustomPainter {
+  const _ScanLinePainter({required this.progress});
   final double progress;
-  final List<List<double>> locations;
-  final Offset Function(double lon, double lat, Size size) projectFn;
-
-  _HotspotsPainter({required this.progress, required this.locations, required this.projectFn});
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (final loc in locations) {
-      final pos = projectFn(loc[0], loc[1], size);
-      final intensity = loc[2];
+    final y = size.height * progress;
+    canvas.drawRect(
+      Rect.fromLTWH(0, y - 22, size.width, 44),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, y - 22),
+          Offset(0, y + 22),
+          [
+            Colors.transparent,
+            Colors.redAccent.withOpacity(0.07),
+            Colors.transparent,
+          ],
+        ),
+    );
+  }
 
-      // Phase offset per hotspot for organic feel
-      final phaseOffset = (loc[0].abs() * 0.01 + loc[1].abs() * 0.02) % 1.0;
-      final localProgress = (progress + phaseOffset) % 1.0;
+  @override
+  bool shouldRepaint(covariant _ScanLinePainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
 
-      // Outer glow pulse
-      final outerRadius = 4 + (12 * intensity * localProgress);
-      final outerPaint = Paint()
-        ..color = Colors.redAccent.withOpacity(0.15 * intensity * (1 - localProgress))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-      canvas.drawCircle(pos, outerRadius, outerPaint);
+class _ProfessionalWorldMapPainter extends CustomPainter {
+  Offset _project(double lon, double lat, Size size) {
+    final x = (lon + 180) / 360 * size.width;
+    final y = (90 - lat) / 180 * size.height;
+    return Offset(x, y);
+  }
 
-      // Mid glow
-      final midRadius = 2 + (6 * intensity * localProgress);
-      final midPaint = Paint()
-        ..color = Colors.red.withOpacity(0.25 * intensity * (1 - localProgress))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-      canvas.drawCircle(pos, midRadius, midPaint);
+  Path _build(List<List<double>> coords, Size size) {
+    final path = Path();
+    if (coords.isEmpty) return path;
+    final first = _project(coords.first[0], coords.first[1], size);
+    path.moveTo(first.dx, first.dy);
+    for (final point in coords.skip(1)) {
+      final projected = _project(point[0], point[1], size);
+      path.lineTo(projected.dx, projected.dy);
+    }
+    path.close();
+    return path;
+  }
 
-      // Core dot (always visible)
-      final corePaint = Paint()
-        ..color = Color.lerp(Colors.orange, Colors.redAccent, intensity)!.withOpacity(0.7 + 0.3 * intensity)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1);
-      canvas.drawCircle(pos, 1.5 + intensity, corePaint);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final continents = <Path>[
+      _build([
+        [-168, 72], [-156, 71], [-148, 68], [-140, 62], [-132, 57], [-128, 52],
+        [-126, 48], [-123, 46], [-124, 40], [-119, 36], [-117, 32], [-112, 27],
+        [-108, 25], [-103, 23], [-97, 24], [-90, 28], [-84, 29], [-81, 26],
+        [-80, 22], [-84, 18], [-87, 14], [-92, 16], [-97, 18], [-103, 21],
+        [-108, 25], [-114, 31], [-120, 38], [-126, 47], [-136, 55], [-150, 63],
+        [-160, 68], [-168, 72],
+      ], size),
+      _build([
+        [-54, 59], [-48, 62], [-41, 69], [-33, 76], [-22, 78], [-18, 72],
+        [-24, 64], [-34, 60], [-44, 58], [-54, 59],
+      ], size),
+      _build([
+        [-82, 12], [-79, 8], [-77, 4], [-74, -1], [-71, -6], [-68, -10],
+        [-64, -16], [-61, -22], [-58, -28], [-56, -34], [-58, -42], [-63, -49],
+        [-69, -55], [-74, -50], [-76, -40], [-77, -28], [-79, -15], [-82, -2],
+        [-82, 12],
+      ], size),
+      _build([
+        [-10, 36], [-5, 43], [1, 49], [9, 54], [18, 57], [28, 58], [36, 55],
+        [32, 49], [26, 46], [20, 43], [13, 42], [8, 40], [3, 39], [-3, 38],
+        [-10, 36],
+      ], size),
+      _build([
+        [-17, 35], [-10, 36], [-2, 35], [8, 33], [18, 33], [27, 31], [33, 24],
+        [37, 15], [39, 6], [38, -4], [35, -15], [29, -24], [20, -33], [11, -35],
+        [4, -27], [-1, -15], [-5, -2], [-8, 11], [-12, 22], [-17, 35],
+      ], size),
+      _build([
+        [28, 41], [36, 46], [46, 51], [58, 56], [72, 60], [86, 64], [100, 68],
+        [116, 70], [132, 66], [146, 58], [154, 50], [150, 42], [142, 33], [132, 22],
+        [120, 17], [110, 12], [102, 7], [96, 7], [90, 14], [82, 20], [76, 24],
+        [70, 22], [64, 18], [58, 20], [52, 26], [46, 31], [40, 34], [34, 38],
+        [28, 41],
+      ], size),
+      _build([
+        [68, 24], [74, 28], [81, 30], [88, 27], [92, 22], [90, 17], [84, 10],
+        [77, 8], [72, 14], [68, 24],
+      ], size),
+      _build([
+        [100, 8], [106, 11], [114, 10], [122, 6], [128, 1], [132, -5], [128, -8],
+        [119, -7], [112, -3], [106, 1], [100, 8],
+      ], size),
+      _build([
+        [112, -11], [120, -15], [130, -18], [141, -21], [150, -28], [150, -38],
+        [140, -42], [128, -39], [119, -32], [113, -23], [112, -11],
+      ], size),
+      _build([
+        [-9, 50], [-5, 53], [0, 55], [2, 52], [-2, 50], [-6, 50], [-9, 50],
+      ], size),
+      _build([
+        [136, 34], [140, 38], [145, 42], [148, 38], [144, 34], [139, 32], [136, 34],
+      ], size),
+      _build([
+        [-180, -60], [-140, -62], [-100, -64], [-60, -66], [-20, -67], [20, -66],
+        [60, -65], [100, -64], [140, -62], [180, -60], [180, -78], [-180, -78], [-180, -60],
+      ], size),
+    ];
 
-      // Bright center
-      final centerPaint = Paint()
-        ..color = Colors.orangeAccent.withOpacity(0.9)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.5);
-      canvas.drawCircle(pos, 0.8, centerPaint);
+    final fill = Paint()
+      ..color = const Color(0xFF123451).withOpacity(0.28)
+      ..style = PaintingStyle.fill;
+    final coast = Paint()
+      ..color = const Color(0xFF3E709A).withOpacity(0.55)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+    final glow = Paint()
+      ..color = const Color(0xFF2BD3FF).withOpacity(0.08)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.6
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+    final dim = Paint()..color = const Color(0xFF284A69).withOpacity(0.55);
+    final bright = Paint()..color = const Color(0xFF4B82B5).withOpacity(0.72);
+
+    for (final continent in continents) {
+      canvas.drawPath(continent, fill);
+      canvas.drawPath(continent, glow);
+      canvas.drawPath(continent, coast);
+    }
+
+    for (double x = 0; x < size.width; x += 5) {
+      for (double y = 0; y < size.height; y += 5) {
+        final point = Offset(x, y);
+        for (final continent in continents) {
+          if (continent.contains(point)) {
+            canvas.drawCircle(
+              point,
+              1,
+              ((x + y).toInt() % 6 == 0) ? bright : dim,
+            );
+            break;
+          }
+        }
+      }
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// LIVE THREAT FEED — Terminal-style scrolling feed
-// ══════════════════════════════════════════════════════════════════════════════
-
-class _LiveThreatFeed extends StatelessWidget {
-  final ThreatIntelligenceProvider provider;
-  const _LiveThreatFeed({required this.provider});
+class _GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.02)
+      ..strokeWidth = 0.5;
+    for (double x = 0; x < size.width; x += 36) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    for (double y = 0; y < size.height; y += 36) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0A0E18),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.redAccent.withOpacity(0.15)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Feed header
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.redAccent.withOpacity(0.05),
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(12),
-                topRight: Radius.circular(12),
-              ),
-              border: Border(bottom: BorderSide(color: Colors.redAccent.withOpacity(0.15))),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.redAccent.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.circle, size: 6, color: Colors.redAccent),
-                      SizedBox(width: 4),
-                      Text(
-                        'LIVE THREAT FEED',
-                        style: TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '${provider.globalThreats.length} DETECTIONS',
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.3),
-                    fontSize: 9,
-                    fontFamily: 'monospace',
-                    letterSpacing: 1,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // Scrollable feed
-          Expanded(
-            child: provider.globalThreats.isEmpty
-                ? Center(
-                    child: Text(
-                      'AWAITING_THREAT_DATA...',
-                      style: TextStyle(color: Colors.white.withOpacity(0.2), fontFamily: 'monospace', fontSize: 12),
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    itemCount: provider.globalThreats.length,
-                    itemBuilder: (context, index) {
-                      final threat = provider.globalThreats[index];
-                      return _ThreatFeedItem(threat: threat, index: index);
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ThreatFeedItem extends StatelessWidget {
-  final GlobalThreat threat;
-  final int index;
-  const _ThreatFeedItem({required this.threat, required this.index});
-
-  @override
-  Widget build(BuildContext context) {
-    Color severityColor = Colors.greenAccent;
-    if (threat.severity == 'HIGH') severityColor = Colors.orangeAccent;
-    if (threat.severity == 'CRITICAL') severityColor = Colors.redAccent;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Colors.white.withOpacity(0.03)),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Timestamp + Region + Severity
-          Row(
-            children: [
-              Text(
-                threat.timestamp.length > 10 ? threat.timestamp.substring(11, 19) : threat.timestamp,
-                style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 9, fontFamily: 'monospace'),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '[${threat.region}]',
-                style: const TextStyle(color: Colors.cyanAccent, fontSize: 9, fontFamily: 'monospace', fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: severityColor.withOpacity(0.1),
-                  border: Border.all(color: severityColor.withOpacity(0.5)),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-                child: Text(
-                  threat.severity,
-                  style: TextStyle(color: severityColor, fontSize: 7, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                ),
-              ),
-              const Spacer(),
-              if (threat.blockchainVerified)
-                Icon(Icons.verified, size: 10, color: Colors.blueAccent.withOpacity(0.6)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '> ${threat.category.toUpperCase()} :: ${threat.campaign.toUpperCase()}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: severityColor.withOpacity(0.9),
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            threat.description,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.6),
-              fontSize: 11,
-              height: 1.3,
-              fontFamily: 'monospace',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// INFO ITEM (for dialog)
-// ══════════════════════════════════════════════════════════════════════════════
-
-class _InfoItem extends StatelessWidget {
-  final String title;
-  final String desc;
-  const _InfoItem({required this.title, required this.desc});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12)),
-          const SizedBox(height: 2),
-          Text(desc, style: const TextStyle(color: Colors.white70, fontSize: 11)),
-        ],
-      ),
-    );
-  }
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

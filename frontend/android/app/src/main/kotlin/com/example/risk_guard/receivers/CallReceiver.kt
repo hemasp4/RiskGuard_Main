@@ -23,8 +23,13 @@ class CallReceiver : BroadcastReceiver() {
 
         Log.d("CallReceiver", "Phone State Changed: $state, Number: $phoneNumber")
 
-        ProtectionEventStore.storeCallEvent(context, state, phoneNumber)
-        ProtectionEventStore.broadcastCall(context, state, phoneNumber)
+        // The receiver bootstraps the foreground service so a running listener
+        // becomes the long-lived source of truth. Emitting call events from both
+        // here and the service causes duplicate/stale overlay state.
+        if (!ProtectionEventStore.isForegroundServiceRunning(context)) {
+            ProtectionEventStore.storeCallEvent(context, state, phoneNumber)
+            ProtectionEventStore.broadcastCall(context, state, phoneNumber)
+        }
 
         val serviceIntent = Intent(context, RiskGuardForegroundService::class.java).apply {
             putExtra("phoneNumber", phoneNumber)

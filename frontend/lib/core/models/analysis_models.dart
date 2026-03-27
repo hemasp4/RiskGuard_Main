@@ -395,9 +395,15 @@ class GlobalThreat {
   final String id;
   final String timestamp;
   final String region;
+  final String cityOrZoneLabel;
+  final String threatClass;
+  final String mediaType;
   final String category;
   final String campaign;
   final String severity;
+  final String confidenceBand;
+  final String analysisSource;
+  final String artifactSummary;
   final String description;
   final bool blockchainVerified;
 
@@ -405,23 +411,44 @@ class GlobalThreat {
     required this.id,
     required this.timestamp,
     required this.region,
+    required this.cityOrZoneLabel,
+    required this.threatClass,
+    required this.mediaType,
     required this.category,
     required this.campaign,
     required this.severity,
+    required this.confidenceBand,
+    required this.analysisSource,
+    required this.artifactSummary,
     required this.description,
     required this.blockchainVerified,
   });
 
   factory GlobalThreat.fromJson(Map<String, dynamic> json) {
+    final threatClass =
+        json['threatClass'] ?? json['threat_class'] ?? json['category'] ?? '';
+    final mediaType = json['mediaType'] ?? json['media_type'] ?? '';
+    final artifactSummary =
+        json['artifactSummary'] ?? json['artifact_summary'] ?? '';
     return GlobalThreat(
       id: json['id'] ?? '',
       timestamp: json['timestamp'] ?? '',
       region: json['region'] ?? '',
-      category: json['category'] ?? '',
-      campaign: json['campaign'] ?? '',
+      cityOrZoneLabel:
+          json['cityOrZoneLabel'] ?? json['city_or_zone_label'] ?? '',
+      threatClass: threatClass,
+      mediaType: mediaType,
+      category: json['category'] ?? threatClass,
+      campaign: json['campaign'] ?? mediaType,
       severity: json['severity'] ?? 'LOW',
-      description: json['description'] ?? '',
-      blockchainVerified: json['blockchain_verified'] ?? false,
+      confidenceBand:
+          json['confidenceBand'] ?? json['confidence_band'] ?? '50-59%',
+      analysisSource:
+          json['analysisSource'] ?? json['analysis_source'] ?? 'local',
+      artifactSummary: artifactSummary,
+      description: json['description'] ?? artifactSummary,
+      blockchainVerified:
+          json['blockchainVerified'] ?? json['blockchain_verified'] ?? false,
     );
   }
 }
@@ -431,20 +458,37 @@ class RiskHotspot {
   final double lng;
   final double intensity;
   final String label;
+  final String region;
+  final int eventCount;
+  final List<String> threatClasses;
 
   RiskHotspot({
     required this.lat,
     required this.lng,
     required this.intensity,
     required this.label,
+    required this.region,
+    required this.eventCount,
+    required this.threatClasses,
   });
 
   factory RiskHotspot.fromJson(Map<String, dynamic> json) {
+    final rawEventCount = json['eventCount'] ?? json['event_count'] ?? 0;
     return RiskHotspot(
       lat: (json['lat'] ?? 0.0).toDouble(),
       lng: (json['lng'] ?? 0.0).toDouble(),
       intensity: (json['intensity'] ?? 0.0).toDouble(),
       label: json['label'] ?? '',
+      region: json['region'] ?? '',
+      eventCount: rawEventCount is num ? rawEventCount.toInt() : 0,
+      threatClasses:
+          (json['threatClasses'] as List?)
+              ?.map((entry) => entry.toString())
+              .toList() ??
+          (json['threat_classes'] as List?)
+              ?.map((entry) => entry.toString())
+              .toList() ??
+          <String>[],
     );
   }
 }
@@ -456,6 +500,9 @@ class UrlVerificationResult {
   final String threatType;
   final String intelligenceSource;
   final String recommendation;
+  final String? requestId;
+  final double? latencyMs;
+  final bool cacheHit;
 
   UrlVerificationResult({
     required this.url,
@@ -464,16 +511,25 @@ class UrlVerificationResult {
     required this.threatType,
     required this.intelligenceSource,
     required this.recommendation,
+    this.requestId,
+    this.latencyMs,
+    this.cacheHit = false,
   });
 
   factory UrlVerificationResult.fromJson(Map<String, dynamic> json) {
+    final rawRiskScore = json['riskScore'] ?? json['risk_score'] ?? 0;
+    final rawLatency = json['latencyMs'] ?? json['latency_ms'];
     return UrlVerificationResult(
       url: json['url'] ?? '',
       status: json['status'] ?? 'SAFE',
-      riskScore: (json['riskScore'] ?? 0) as int,
-      threatType: json['threatType'] ?? '',
-      intelligenceSource: json['intelligenceSource'] ?? '',
+      riskScore: rawRiskScore is num ? rawRiskScore.toInt() : 0,
+      threatType: json['threatType'] ?? json['threat_type'] ?? '',
+      intelligenceSource:
+          json['intelligenceSource'] ?? json['intelligence_source'] ?? '',
       recommendation: json['recommendation'] ?? '',
+      requestId: json['requestId'] ?? json['request_id'],
+      latencyMs: rawLatency is num ? rawLatency.toDouble() : null,
+      cacheHit: json['cacheHit'] == true || json['cache_hit'] == true,
     );
   }
 }

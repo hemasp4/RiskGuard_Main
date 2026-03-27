@@ -1,28 +1,50 @@
-import 'package:flutter/foundation.dart';
 import 'dart:async';
-import 'api_service.dart';
+
+import 'package:flutter/foundation.dart';
+
 import '../models/analysis_models.dart';
+import 'api_service.dart';
 
 class ThreatIntelligenceProvider extends ChangeNotifier {
+  ThreatIntelligenceProvider();
+
   final ApiService _apiService = ApiService();
-  
-  List<GlobalThreat> _globalThreats = [];
-  List<RiskHotspot> _hotspots = [];
+
+  List<GlobalThreat> _globalThreats = <GlobalThreat>[];
+  List<RiskHotspot> _hotspots = <RiskHotspot>[];
   bool _isLoading = false;
+  bool _isVisible = false;
   Timer? _refreshTimer;
 
   List<GlobalThreat> get globalThreats => _globalThreats;
-  List<RiskHotspot> get hotspots => _hotspots;
+  List<GlobalThreat> get terminalThreats => _globalThreats.take(30).toList();
+  List<RiskHotspot> get hotspots => _hotspots.take(20).toList();
   bool get isLoading => _isLoading;
+  bool get isVisible => _isVisible;
 
-  ThreatIntelligenceProvider() {
-    init();
+  void attachScreen() {
+    if (_isVisible) return;
+    _isVisible = true;
+    _startPolling();
+    unawaited(refreshAll());
+    notifyListeners();
   }
 
-  void init() {
-    refreshAll();
-    // Refresh every 60 seconds for a "live" feel
-    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => refreshAll());
+  void detachScreen() {
+    if (!_isVisible) return;
+    _isVisible = false;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+    notifyListeners();
+  }
+
+  void _startPolling() {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (_isVisible) {
+        unawaited(refreshAll());
+      }
+    });
   }
 
   @override
@@ -43,12 +65,16 @@ class ThreatIntelligenceProvider extends ChangeNotifier {
     final threatResult = results[0] as ApiResult<List<GlobalThreat>>;
     final hotspotResult = results[1] as ApiResult<List<RiskHotspot>>;
 
-    if (threatResult.isSuccess) {
+    if (threatResult.isSuccess && threatResult.data != null) {
       _globalThreats = threatResult.data!;
+    } else {
+      _globalThreats = <GlobalThreat>[];
     }
-    
-    if (hotspotResult.isSuccess) {
+
+    if (hotspotResult.isSuccess && hotspotResult.data != null) {
       _hotspots = hotspotResult.data!;
+    } else {
+      _hotspots = <RiskHotspot>[];
     }
 
     _isLoading = false;

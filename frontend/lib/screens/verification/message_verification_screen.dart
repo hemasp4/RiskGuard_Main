@@ -331,7 +331,12 @@ class _MessageVerificationScreenState extends State<MessageVerificationScreen> {
 
     // Notify overlay for text scan
     await NativeBridge.sendMessageToOverlay({
+      'sessionKind': 'media',
+      'sourcePackage': 'com.example.risk_guard',
+      'targetType': 'text',
+      'targetLabel': 'Message verification',
       'status': 'Analyzing text...',
+      'analysisSource': 'manual_scan',
       'isThreat': false,
       'threatText': 'Verifying message content...',
     });
@@ -345,11 +350,19 @@ class _MessageVerificationScreenState extends State<MessageVerificationScreen> {
       
       // Success overlay update
       await NativeBridge.sendMessageToOverlay({
+        'sessionKind': 'media',
+        'sourcePackage': 'com.example.risk_guard',
+        'targetType': 'text',
+        'targetLabel': 'Message verification',
         'status': 'Scan Complete',
+        'analysisSource': 'manual_scan',
         'isThreat': !data.isSafe,
         'threatText': data.isSafe ? 'Safe Message' : 'Potential Scamm Detected!',
         'riskScore': data.riskScore / 100,
         'threatType': 'Text Scam',
+        'recommendation': data.isSafe
+            ? 'No strong scam indicators were detected in the message.'
+            : 'Avoid acting on the message until the sender and request are verified.',
       });
 
       // Store in scan history

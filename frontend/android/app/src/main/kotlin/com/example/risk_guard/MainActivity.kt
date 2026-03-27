@@ -13,17 +13,56 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.text.TextUtils
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.media.projection.MediaProjectionManager
+import android.view.accessibility.AccessibilityManager
 import androidx.annotation.NonNull
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.view.accessibility.AccessibilityManager
 
 class MainActivity : FlutterFragmentActivity() {
     private val CHANNEL = "com.example.risk_guard/native"
     private var methodChannel: MethodChannel? = null
+    private var pendingMediaProjectionResult: MethodChannel.Result? = null
+    private val mediaProjectionLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val pendingResult = pendingMediaProjectionResult
+            pendingMediaProjectionResult = null
+            if (pendingResult == null) {
+                return@registerForActivityResult
+            }
+
+            if (result.resultCode == RESULT_OK && result.data != null) {
+                try {
+                    val serviceIntent = Intent(
+                        this,
+                        com.example.risk_guard.services.RiskGuardMediaProjectionService::class.java,
+                    ).apply {
+                        action =
+                            com.example.risk_guard.services.RiskGuardMediaProjectionService.ACTION_START_CAPTURE_SESSION
+                        putExtra(
+                            com.example.risk_guard.services.RiskGuardMediaProjectionService.EXTRA_RESULT_CODE,
+                            result.resultCode,
+                        )
+                        putExtra(
+                            com.example.risk_guard.services.RiskGuardMediaProjectionService.EXTRA_PROJECTION_DATA,
+                            result.data,
+                        )
+                    }
+                    ContextCompat.startForegroundService(this, serviceIntent)
+                    pendingResult.success(true)
+                } catch (e: Exception) {
+                    pendingResult.error("MEDIA_PROJECTION_ERROR", e.message, null)
+                }
+            } else {
+                pendingResult.success(false)
+            }
+        }
 
     private val callDetectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -135,6 +174,15 @@ class MainActivity : FlutterFragmentActivity() {
                             action = "STOP_SERVICE"
                         }
                         startService(serviceIntent)
+                        startService(
+                            Intent(
+                                this@MainActivity,
+                                com.example.risk_guard.services.RiskGuardMediaProjectionService::class.java,
+                            ).apply {
+                                action =
+                                    com.example.risk_guard.services.RiskGuardMediaProjectionService.ACTION_STOP_CAPTURE_SESSION
+                            },
+                        )
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("CLEAR_STATE_ERROR", e.message, null)
@@ -144,11 +192,14 @@ class MainActivity : FlutterFragmentActivity() {
                     try {
                         val serviceIntent = Intent(this@MainActivity, 
                             com.example.risk_guard.services.RiskGuardForegroundService::class.java)
-                        androidx.core.content.ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
+                        ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("SERVICE_ERROR", e.message, null)
                     }
+                }
+                "isForegroundServiceRunning" -> {
+                    result.success(ProtectionEventStore.isForegroundServiceRunning(this@MainActivity))
                 }
                 "stopForegroundService" -> {
                     try {
@@ -159,6 +210,66 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("SERVICE_ERROR", e.message, null)
+                    }
+                }
+                "requestMediaProjectionPermission" -> {
+                    if (pendingMediaProjectionResult != null) {
+                        result.error(
+                            "MEDIA_PROJECTION_BUSY",
+                            "Another screen-capture request is already pending.",
+                            null,
+                        )
+                    } else {
+                        requestMediaProjectionPermission(result)
+                    }
+                }
+                "isMediaProjectionActive" -> {
+                    result.success(ProtectionEventStore.isMediaProjectionRunning(this@MainActivity))
+                }
+                "requestRealtimeMediaCapture" -> {
+                    val sourcePackage = call.argument<String>("sourcePackage")
+                    val reason = call.argument<String>("reason") ?: "manual"
+                    if (sourcePackage.isNullOrBlank() ||
+                        !ProtectionEventStore.isMediaProjectionRunning(this@MainActivity)
+                    ) {
+                        result.success(false)
+                    } else {
+                        try {
+                            val serviceIntent = Intent(
+                                this@MainActivity,
+                                com.example.risk_guard.services.RiskGuardMediaProjectionService::class.java,
+                            ).apply {
+                                action =
+                                    com.example.risk_guard.services.RiskGuardMediaProjectionService.ACTION_CAPTURE_FRAME
+                                putExtra(
+                                    com.example.risk_guard.services.RiskGuardMediaProjectionService.EXTRA_SOURCE_PACKAGE,
+                                    sourcePackage,
+                                )
+                                putExtra(
+                                    com.example.risk_guard.services.RiskGuardMediaProjectionService.EXTRA_REASON,
+                                    reason,
+                                )
+                            }
+                            startService(serviceIntent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("MEDIA_CAPTURE_ERROR", e.message, null)
+                        }
+                    }
+                }
+                "stopMediaProjectionService" -> {
+                    try {
+                        val serviceIntent = Intent(
+                            this@MainActivity,
+                            com.example.risk_guard.services.RiskGuardMediaProjectionService::class.java,
+                        ).apply {
+                            action =
+                                com.example.risk_guard.services.RiskGuardMediaProjectionService.ACTION_STOP_CAPTURE_SESSION
+                        }
+                        startService(serviceIntent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("MEDIA_PROJECTION_ERROR", e.message, null)
                     }
                 }
                 else -> {
@@ -256,6 +367,27 @@ class MainActivity : FlutterFragmentActivity() {
     private fun requestAccessibilityPermission() {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
         startActivity(intent)
+    }
+
+    private fun requestMediaProjectionPermission(result: MethodChannel.Result) {
+        val manager =
+            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        if (manager == null) {
+            result.error(
+                "MEDIA_PROJECTION_UNAVAILABLE",
+                "MediaProjectionManager is unavailable.",
+                null,
+            )
+            return
+        }
+
+        pendingMediaProjectionResult = result
+        try {
+            mediaProjectionLauncher.launch(manager.createScreenCaptureIntent())
+        } catch (e: Exception) {
+            pendingMediaProjectionResult = null
+            result.error("MEDIA_PROJECTION_ERROR", e.message, null)
+        }
     }
 
     override fun onDestroy() {
